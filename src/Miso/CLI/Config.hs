@@ -11,6 +11,8 @@
 -- >     git: https://github.com/example/lens-family
 -- >     rev: v2.1.3
 -- >     flags: -foo +bar
+-- >   - name: my-lib           # a local checkout (relative to miso.yml)
+-- >     path: ../my-lib
 --
 -- miso itself, and base, containers, mtl, ... come installed with the tool.
 --
@@ -42,7 +44,8 @@ data Config = Config
 
 data Dep = Dep
   { depName  :: String
-  , depGit   :: Maybe String        -- ^ a git repository, otherwise from Hackage
+  , depGit   :: Maybe String        -- ^ a git repository
+  , depPath  :: Maybe FilePath      -- ^ a local directory (otherwise from Hackage)
   , depRev   :: Maybe String        -- ^ a git revision
   , depFlags :: Maybe String        -- ^ cabal flags, as for mcabal -f
   } deriving (Show, Eq)
@@ -182,16 +185,19 @@ depsOf (List vs) = mapM dep vs
 depsOf v = Left ("miso.yml: dependencies should be a list, found " ++ show v)
 
 dep :: Value -> Either String Dep
-dep (Str s) = Right (Dep s Nothing Nothing Nothing)
+dep (Str s) = Right (Dep s Nothing Nothing Nothing Nothing)
 dep (Map kvs) = do
   name <- maybe (Left "miso.yml: a dependency without a name") str (lookup "name" kvs)
   git <- opt "git"
+  path <- opt "path"
   rev <- opt "rev"
   flags <- opt "flags"
   mapM_ known (map fst kvs)
-  Right (Dep name git rev flags)
+  case (git, path) of
+    (Just _, Just _) -> Left ("miso.yml: dependency " ++ name ++ " has both git and path")
+    _ -> Right (Dep name git path rev flags)
   where
     opt k = maybe (Right Nothing) (fmap Just . str) (lookup k kvs)
-    known k | k `elem` ["name", "git", "rev", "flags"] = Right ()
+    known k | k `elem` ["name", "git", "path", "rev", "flags"] = Right ()
             | otherwise = Left ("miso.yml: unknown dependency field " ++ k)
 dep v = Left ("miso.yml: bad dependency " ++ show v)

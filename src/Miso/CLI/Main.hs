@@ -14,7 +14,9 @@ import System.Directory
   ( createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getHomeDirectory )
 import System.Environment (getArgs, getExecutablePath, lookupEnv, setEnv, withArgs)
 import System.Exit (ExitCode (..), exitWith)
+import Data.Maybe (isJust)
 import System.Process (system)
+import qualified System.Info as Info
 
 import qualified MicroCabal.Main as MCabal
 import qualified MicroHs.Main as MHS
@@ -91,12 +93,36 @@ cabalDir, pkgDir :: IO FilePath
 cabalDir = (++ "/mcabal") <$> misoHome
 pkgDir = (\d -> d ++ "/mhs-" ++ mhsVersion) <$> cabalDir
 
+-- | The path of the executable, with / (it goes in sh commands).
 self :: IO String
-self = getExecutablePath
+self = map (\c -> if c == '\\' then '/' else c) <$> getExecutablePath
+
+windows :: Bool
+windows = Info.os == "windows"
+
+-- | A command for system: on Windows system runs cmd.exe, so run sh
+-- (from MSYS2) instead.
+shell :: String -> String
+shell c
+  | windows = "sh -c \"" ++ concatMap (\x -> if x == '"' then "\\\"" else [x]) c ++ "\""
+  | otherwise = c
+
+-- | mhs runs cpphs on modules with CPP: use the one next to us.
+setupCpphs :: IO ()
+setupCpphs = do
+  set <- lookupEnv "MHSCPPHS"
+  case set of
+    Just _ -> pure ()
+    Nothing -> do
+      exe <- self
+      let cpphs = parent exe ++ "/cpphs" ++ (if windows then ".exe" else "")
+      ok <- doesFileExist cpphs
+      when ok $ setEnv "MHSCPPHS" cpphs
 
 -- | Make mcabal install into our package database, and compile with us.
 setupEnv :: IO ()
 setupEnv = do
+  setupCpphs
   cd <- cabalDir
   createDirectoryIfMissing True cd
   setEnv "CABALDIR" cd
@@ -111,6 +137,7 @@ quote s = "'" ++ concatMap (\c -> if c == '\'' then "'\\''" else [c]) s ++ "'"
 -- A bare -a clears the package path, so it is left alone.
 runMhs :: [String] -> IO ()
 runMhs as = do
+  setupCpphs
   pd <- pkgDir
   createDirectoryIfMissing True pd
   let as' | "-a" `elem` as || ("-a" ++ pd) `elem` as = as
@@ -123,7 +150,7 @@ runMcabal as = setupEnv >> withArgs as MCabal.main
 -- | Run a command, and stop if it fails.
 run :: String -> IO ()
 run c = do
-  r <- system c
+  r <- system (shell c)
   case r of
     ExitSuccess -> pure ()
     ExitFailure _ -> failWith ("command failed: " ++ c)
@@ -151,17 +178,20 @@ installDeps cfg = do
   let stamp = parent (parent exe) ++ "/mhs-" ++ mhsVersion ++ "/miso-installed"
   have <- do ok <- doesFileExist stamp
              if ok then lines <$> readFile' stamp else pure []
-  let todo = [ d | d <- cfgDeps cfg, show d `notElem` have ]
+  -- A local checkout is installed on every build, as it changes; the
+  -- others once.
+  let local = isJust . depPath
+      todo = [ d | d <- cfgDeps cfg, local d || show d `notElem` have ]
   if null todo
     then step "dependencies are installed"
     else forM_ todo $ \d -> do
-      info ("Installing " ++ depName d)
+      info ("Installing " ++ depName d ++ maybe "" (" from " ++) (depPath d))
       installDep d
-      appendFile stamp (show d ++ "\n")
+      unless (local d) $ appendFile stamp (show d ++ "\n")
 
 -- | The directory of a path.
 parent :: FilePath -> FilePath
-parent = reverse . drop 1 . dropWhile (/= '/') . reverse
+parent = reverse . drop 1 . dropWhile (`notElem` "/\\") . reverse
 
 readFile' :: FilePath -> IO String
 readFile' f = do
@@ -172,9 +202,13 @@ installDep :: Dep -> IO ()
 installDep d = do
   exe <- self
   let mcabal = quote exe ++ " mcabal" ++ maybe "" (\f -> " -f" ++ quote f) (depFlags d) ++ " install"
-  case depGit d of
-    Nothing -> run (mcabal ++ " " ++ quote (depName d))
-    Just repo -> do
+  case (depGit d, depPath d) of
+    (_, Just dir) -> do
+      ok <- doesDirectoryExist dir
+      unless ok $ failWith ("dependency " ++ depName d ++ ": no directory " ++ dir)
+      run ("cd " ++ quote dir ++ " && " ++ mcabal)
+    (Nothing, Nothing) -> run (mcabal ++ " " ++ quote (depName d))
+    (Just repo, Nothing) -> do
       home <- misoHome
       let dir = home ++ "/src/" ++ depName d ++ "-" ++ maybe "HEAD" sanitize (depRev d)
       have <- doesDirectoryExist dir
@@ -208,7 +242,7 @@ build cfg = do
 runExe :: [String] -> FilePath -> IO ()
 runExe as exe = do
   when (".js" `isSuffixOf'` exe) $ failWith "miso run runs native programs; serve public/ for a browser target"
-  r <- system (unwords (map quote (("./" ++ exe) : as)))
+  r <- system (shell (unwords (map quote (("./" ++ exe) : as))))
   exitWith r
   where isSuffixOf' s x = reverse s `isPrefixOf` reverse x
 

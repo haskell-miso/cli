@@ -36,13 +36,14 @@
               CC=${cc.targetPrefix}cc LDFLAGS="${if static then "-static" else ""}"
             runHook postBuild
           '';
-          # The layout mhs expects of an installation: bin/ next to the
+          # The layout mhs expects of an installation: bin/ (miso, and cpphs
+          # for modules with CPP) next to the
           # package database mhs-VERSION/ (base, containers, mtl, miso, ...,
           # and the runtime sources programs are compiled with).
           installPhase = ''
             runHook preInstall
             mkdir -p $out/bin
-            cp build/miso $out/bin/miso
+            cp build/miso build/cpphs $out/bin/
             cp -r ${pkgs.miso-mhs}/lib/mcabal/mhs-${mhsVersion} $out/mhs-${mhsVersion}
             runHook postInstall
           '';

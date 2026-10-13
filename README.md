@@ -1,6 +1,6 @@
 # miso
 
-The command line tool for [miso](https://haskell-miso.org) apps: one
+The command line tool for [miso](https://haskell-miso.org) apps: an
 executable with the [MicroHs](https://github.com/augustss/MicroHs) compiler
 and [MicroCabal](https://github.com/augustss/MicroCabal) inside, and miso
 and its dependencies already installed.
@@ -43,6 +43,8 @@ dependencies:
     git: https://github.com/example/lens-family
     rev: v2.1.3
     flags: -foo +bar
+  - name: my-lib           # a local checkout, relative to miso.yml
+    path: ../my-lib        # (installed again on every build)
 ```
 
 base, containers, mtl, transformers, array, and miso come with the tool.
@@ -70,7 +72,7 @@ The release tarball is laid out as an mhs installation:
 
 ```
 miso-aarch64-darwin/
-  bin/miso
+  bin/miso, bin/cpphs (for modules with CPP)
   mhs-0.16.7.0/        the package database: base, miso, ..., and the runtime sources
 ```
 

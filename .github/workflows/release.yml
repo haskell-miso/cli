@@ -1,5 +1,9 @@
-# Build miso for each platform with nix, and attach the tarballs (and their
-# sha256) to the GitHub release of a v* tag.  install.sh downloads them.
+# Build miso for each platform, and attach the tarballs (and their sha256)
+# to the GitHub release of a v* tag.  install.sh downloads them.
+#
+# Linux and Apple Silicon build with nix (flake.nix).  The miso flake's
+# nixpkgs dropped Intel macOS, and nix does not run on Windows, so those
+# build with scripts/build-release.sh, which does the same without nix.
 name: release
 
 on:
@@ -17,42 +21,72 @@ jobs:
         include:
           - { system: x86_64-linux,   runner: ubuntu-latest }
           - { system: aarch64-linux,  runner: ubuntu-24.04-arm }
-          # no x86_64-darwin: the nixpkgs of the miso flake (26.11) dropped it
           - { system: aarch64-darwin, runner: macos-latest }
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
       - name: Build
         run: nix build -L .#tarball
       - name: Smoke test
-        run: |
-          mkdir smoke && tar -C smoke -xzf result/miso-${{ matrix.system }}.tar.gz
-          export MISO_HOME=$PWD/smoke-home PATH=$PWD/smoke/miso-${{ matrix.system }}/bin:$PATH
-          miso version
-          miso new hello
-          cd hello
-          sed -i.bak 's/^target: browser/target: native/' miso.yml
-          printf 'module Main where\nmain :: IO ()\nmain = putStrLn "hello"\n' > app/Main.hs
-          miso run | tail -1 | grep -qx hello
+        run: scripts/smoke-test.sh result/miso-${{ matrix.system }}.tar.gz
       - name: Check static linking
         if: runner.os == 'Linux'
         run: |
-          file smoke/miso-${{ matrix.system }}/bin/miso
-          file smoke/miso-${{ matrix.system }}/bin/miso | grep -q 'statically linked'
-      - uses: actions/upload-artifact@v4
+          tar -C "$RUNNER_TEMP" -xzf result/miso-${{ matrix.system }}.tar.gz
+          file "$RUNNER_TEMP/miso-${{ matrix.system }}/bin/miso"
+          file "$RUNNER_TEMP/miso-${{ matrix.system }}/bin/miso" | grep -q 'statically linked'
+      - uses: actions/upload-artifact@v5
         with:
           name: miso-${{ matrix.system }}
           path: result/*
 
+  build-intel-mac:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build
+        run: scripts/build-release.sh x86_64-darwin
+      - name: Smoke test
+        run: scripts/smoke-test.sh build/out/miso-x86_64-darwin.tar.gz
+      - uses: actions/upload-artifact@v5
+        with:
+          name: miso-x86_64-darwin
+          path: build/out/*
+
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: >-
+            mingw-w64-x86_64-gcc
+            make
+            git
+            tar
+            curl
+      - name: Build
+        run: scripts/build-release.sh x86_64-windows
+      - name: Smoke test
+        run: scripts/smoke-test.sh build/out/miso-x86_64-windows.tar.gz
+      - uses: actions/upload-artifact@v5
+        with:
+          name: miso-x86_64-windows
+          path: build/out/*
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, build-intel-mac, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true

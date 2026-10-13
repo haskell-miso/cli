@@ -25,7 +25,8 @@ die()  { printf '%serror:%s %s\n' "$bold$red" "$reset" "$1" >&2; exit 1; }
 case "$(uname -s)" in
   Linux)  os=linux ;;
   Darwin) os=darwin ;;
-  *) die "unsupported OS: $(uname -s) (miso supports Linux and macOS)" ;;
+  MINGW*|MSYS*|CYGWIN*) os=windows ;;     # Windows: run this in an MSYS2 shell
+  *) die "unsupported OS: $(uname -s) (miso supports Linux, macOS, and Windows with MSYS2)" ;;
 esac
 case "$(uname -m)" in
   x86_64|amd64)  arch=x86_64 ;;
@@ -33,7 +34,7 @@ case "$(uname -m)" in
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
 system=$arch-$os
-[ "$system" = x86_64-darwin ] && die "there is no release for Intel Macs (nixpkgs dropped x86_64-darwin); build from source with an installed mhs (see the README)"
+[ "$system" = aarch64-windows ] && die "there is no release for Windows on ARM yet"
 asset=miso-$system.tar.gz
 
 if [ "$version" = latest ]; then
@@ -68,4 +69,8 @@ case ":$PATH:" in
   *":$home/bin:"*) ;;
   *) printf '\nAdd miso to your PATH:\n\n  export PATH="%s/bin:$PATH"\n\n' "$home" ;;
 esac
-command -v cc >/dev/null || printf 'miso builds programs with a C compiler (cc); install one (Xcode command line tools, or gcc/clang).\n'
+if [ "$os" = windows ]; then
+  command -v gcc >/dev/null || printf 'miso builds programs with gcc: pacman -S mingw-w64-x86_64-gcc\n'
+else
+  command -v cc >/dev/null || printf 'miso builds programs with a C compiler (cc); install one (Xcode command line tools, or gcc/clang).\n'
+fi
