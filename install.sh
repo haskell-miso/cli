@@ -33,6 +33,7 @@ case "$(uname -m)" in
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
 system=$arch-$os
+[ "$system" = x86_64-darwin ] && die "there is no release for Intel Macs (nixpkgs dropped x86_64-darwin); build from source with an installed mhs (see the README)"
 asset=miso-$system.tar.gz
 
 if [ "$version" = latest ]; then

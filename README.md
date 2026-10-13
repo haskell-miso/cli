@@ -88,8 +88,9 @@ nix build .#tarball        # result/miso-SYSTEM.tar.gz, as released
 make MHSSRC=../MicroHs MCABALSRC=../MicroCabal
 ```
 
-Pushing a `v*` tag builds the four platforms (x86_64 and aarch64, Linux
-and macOS) and attaches them to the release, where `install.sh` finds them.
+Pushing a `v*` tag builds three platforms (x86_64 and aarch64 Linux,
+aarch64 macOS; the miso flake's nixpkgs no longer supports Intel Macs, which
+can build with `make` and an installed mhs) and attaches them to the release, where `install.sh` finds them.
 `install.sh` is to be served at `https://haskell-miso.org/install.sh`.  The
 release assets must be downloadable without a GitHub login, so the releases
 need a public repository.
