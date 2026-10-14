@@ -5,7 +5,7 @@ import Control.Monad (forM, unless, when)
 import Data.List (isPrefixOf)
 import Foreign.C.String (CString, withCAString)
 import Foreign.C.Types (CInt (..), CLong (..))
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 
 import Miso.CLI.Color
 import Miso.CLI.Config
@@ -17,15 +17,27 @@ foreign import ccall "serve.h miso_serve_poll" c_poll :: CInt -> IO ()
 foreign import ccall "serve.h miso_serve_reload" c_reload :: IO ()
 foreign import ccall "serve.h miso_mtime" c_mtime :: CString -> IO CLong
 
-start :: FilePath -> Int -> Bool -> IO ()
-start dir port devMode = do
-  r <- withCAString dir $ \d -> c_start d (fromIntegral port) (if devMode then 1 else 0)
-  when (r /= 0) $ failWith ("cannot serve on port " ++ show port ++ " (in use?); try --port")
+-- | Serve dir on the port, or, when none was asked for, on the first free
+-- one from 8000.
+start :: FilePath -> Maybe Int -> Bool -> IO ()
+start dir mport devMode = do
+  let try p = withCAString dir $ \d -> c_start d (fromIntegral p) (if devMode then 1 else 0)
+      firstFree [] = failWith "no free port in 8000-8099; pick one with --port"
+      firstFree (p : ps) = do
+        r <- try p
+        if r == 0 then pure p else firstFree ps
+  port <- case mport of
+    Just p -> do
+      r <- try p
+      when (r /= 0) $ failWith ("cannot serve on port " ++ show p ++ " (in use?); leave out --port to take a free one")
+      pure p
+    Nothing -> firstFree [8000 .. 8099]
+  when (mport == Nothing && port /= 8000) $ step ("port 8000 is in use, so " ++ show port)
   url <- colored 1 [Bold, Cyan] ("http://localhost:" ++ show port)
   success ("Serving " ++ dir ++ "/ at " ++ url ++ " (Ctrl-C to stop)")
 
 -- | Serve public/.
-serve :: Int -> IO ()
+serve :: Maybe Int -> IO ()
 serve port = do
   ok <- doesDirectoryExist "public"
   unless ok $ failWith "no public/ here: miso build first (target: browser)"
@@ -35,16 +47,19 @@ serve port = do
 
 -- | Build, serve public/, and on a change of the sources rebuild and
 -- reload the page.
-dev :: Int -> Config -> IO ()
+dev :: Maybe Int -> Config -> IO ()
 dev port cfg = do
   when (maybe True (== "native") (cfgTarget cfg)) $
     failWith "miso dev is for browser targets (target: browser in miso.yml)"
-  built <- tryRunSelf "build"
-  unless built $ warn "the build failed; fix it and save, and miso dev builds again"
-  ok <- doesDirectoryExist "public"
-  unless ok $ failWith "no public/ to serve"
+  -- Serve first (the URL shows at once, and the port is checked before a
+  -- long build), then build: the page reloads when the build is done.
+  createDirectoryIfMissing True "public"
   start "public" port True
   info ("Watching " ++ unwords (watched cfg))
+  built <- tryRunSelf "build"
+  if built
+    then c_reload
+    else warn "the build failed; fix it and save, and miso dev builds again"
   snap <- snapshot cfg
   loop snap
   where

@@ -23,7 +23,7 @@ miso build            # public/index.js (target: browser)
 | `miso build` | install missing dependencies, and build the project of `miso.yml` |
 | `miso run [ARGS]` | build and run it (`target: native`) |
 | `miso dev [--port N]` | build, serve `public/`, and on a change of the sources rebuild and reload the page |
-| `miso serve [--port N]` | serve `public/` (default port 8000) |
+| `miso serve [--port N]` | serve `public/` (on the first free port from 8000, or N) |
 | `miso repl` | mhs, interactively, with the project's sources and packages |
 | `miso clean` | remove `dist/`, `public/`, and the caches |
 | `miso install` | install the dependencies of `miso.yml` |

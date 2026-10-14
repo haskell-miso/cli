@@ -112,11 +112,12 @@ usage = do
 printVersion :: IO ()
 printVersion = putStrLn ("miso " ++ version ++ " (MicroHs " ++ mhsVersion ++ ")")
 
-port :: [String] -> IO Int
+-- | --port N, or Nothing: the first free port from 8000.
+port :: [String] -> IO (Maybe Int)
 port as =
   case as of
-    [] -> pure 8000
-    ["--port", n] | not (null n) && all (`elem` "0123456789") n -> pure (read n)
+    [] -> pure Nothing
+    ["--port", n] | not (null n) && all (`elem` "0123456789") n -> pure (Just (read n))
     _ -> failWith "expected --port N"
 
 -----------------------------------------------------------------------------
