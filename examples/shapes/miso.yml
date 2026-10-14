@@ -1,0 +1,6 @@
+name: shapes
+version: 0.1.0
+synopsis: Two-dimensional shapes, their geometry, and SVG rendering.
+library:
+  source-dirs: [src]
+  exposed-modules: [Shapes, Shapes.Types, Shapes.Geometry, Shapes.Render]

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>%TITLE%</title>
+    <meta name="generator" content="miso docs">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+    <link rel="stylesheet" href="docs.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+    <script>
+      // The data of data/: each file is a script that calls misoDocsData, so
+      // it loads from file:// too.  misoDocsLoad loads a module's file once.
+      window.misoDocs = { data: {}, waiting: {} };
+      window.misoDocsData = function (name, value) {
+        var json = JSON.stringify(value);
+        misoDocs.data[name] = json;
+        var ks = misoDocs.waiting[name] || [];
+        delete misoDocs.waiting[name];
+        ks.forEach(function (k) { k(json); });
+      };
+      window.misoDocsLoad = function (name, k) {
+        if (name in misoDocs.data) { setTimeout(function () { k(misoDocs.data[name]); }, 0); return; }
+        var ks = misoDocs.waiting[name] = misoDocs.waiting[name] || [];
+        ks.push(k);
+        if (ks.length > 1) return;
+        var s = document.createElement("script");
+        s.src = "data/" + name + ".js";
+        s.onerror = function () {
+          var ks = misoDocs.waiting[name] || [];
+          delete misoDocs.waiting[name];
+          ks.forEach(function (k) { k(null); });
+        };
+        document.head.appendChild(s);
+      };
+    </script>
+    <script src="data/index.js"></script>
+  </head>
+  <body>
+    <div class="loading"><span class="loading-mark">λ</span></div>
+    <script>
+      // Scroll to what the hash names once miso has drawn it, and focus the
+      // search box on "/".
+      (function () {
+        function target() {
+          var h = decodeURIComponent(location.hash.replace(/^#/, ""));
+          var parts = h.split("/").filter(function (p) { return p.length; });
+          return parts.length > 1 ? "/" + parts.join("/") : null;
+        }
+        var token = 0;
+        function scroll() {
+          var id = target(), mine = ++token, tries = 0;
+          if (!id) { window.scrollTo(0, 0); return; }
+          (function look() {
+            if (mine !== token) return;
+            var el = document.getElementById(id);
+            if (el) {
+              el.scrollIntoView({ block: "start" });
+              el.classList.remove("flash");
+              void el.offsetWidth;
+              el.classList.add("flash");
+            } else if (tries++ < 60) {
+              requestAnimationFrame(look);
+            }
+          })();
+        }
+        window.addEventListener("hashchange", scroll);
+        window.addEventListener("load", scroll);
+        // a module page is drawn when its data is loaded: scroll then too
+        var drawn = null;
+        new MutationObserver(function () {
+          var mod = document.querySelector(".module-title");
+          var now = mod && !document.querySelector(".skeleton") ? location.hash : null;
+          if (now && now !== drawn) { drawn = now; scroll(); }
+          // math, with KaTeX (when it has loaded)
+          if (window.katex) {
+            document.querySelectorAll(".math:not([data-done])").forEach(function (el) {
+              el.setAttribute("data-done", "");
+              try {
+                katex.render(el.getAttribute("data-tex"), el, { displayMode: el.classList.contains("display"), throwOnError: false });
+              } catch (e) {}
+            });
+          }
+        }).observe(document.body, { childList: true, subtree: true });
+        document.addEventListener("keydown", function (e) {
+          var s = document.getElementById("search");
+          if (e.key === "/" && s && document.activeElement !== s) { e.preventDefault(); s.focus(); }
+          if (e.key === "Escape" && s && document.activeElement === s) { s.blur(); }
+        });
+      })();
+    </script>
+    <script src="index.js"></script>
+  </body>
+</html>
