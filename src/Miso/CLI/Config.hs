@@ -24,6 +24,12 @@ module Miso.CLI.Config
   , readConfig
   , parseConfig
   , configFile
+  , isLocal
+  , isGit
+  , isHackage
+    -- * The YAML subset (miso.lock uses it too)
+  , Value (..)
+  , parseYAML
   ) where
 
 import Data.Char (isSpace)
@@ -49,6 +55,12 @@ data Dep = Dep
   , depRev   :: Maybe String        -- ^ a git revision
   , depFlags :: Maybe String        -- ^ cabal flags, as for mcabal -f
   } deriving (Show, Eq)
+
+-- | Where a dependency comes from: a local directory, git, or Hackage.
+isLocal, isGit, isHackage :: Dep -> Bool
+isLocal d = depPath d /= Nothing
+isGit d = depGit d /= Nothing
+isHackage d = not (isLocal d) && not (isGit d)
 
 readConfig :: IO (Either String Config)
 readConfig = do

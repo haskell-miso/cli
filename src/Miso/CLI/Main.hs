@@ -92,7 +92,7 @@ usage = do
     , cmd "add PKG..." "add dependencies to miso.yml, and install them"
     , cmd "remove PKG..." "remove dependencies from miso.yml"
     , cmd "list" "list the installed packages"
-    , cmd "update" "refresh the package list and git dependencies"
+    , cmd "update" "lock Hackage and git dependencies in miso.lock, and install them"
     ]
   ts <- sequence
     [ cmd "doctor" "check the installation and the tools miso needs"

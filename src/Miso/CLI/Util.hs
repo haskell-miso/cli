@@ -8,6 +8,7 @@ module Miso.CLI.Util
   , quote
   , run
   , tryRun
+  , readCommand
   , runSelf
   , tryRunSelf
   , have
@@ -26,9 +27,10 @@ module Miso.CLI.Util
 
 import Control.Monad (when)
 import Data.List (isPrefixOf)
-import System.Directory (createDirectoryIfMissing, doesFileExist, getHomeDirectory)
+import System.Directory (createDirectoryIfMissing, doesFileExist, getHomeDirectory, getTemporaryDirectory, removeFile)
 import System.Environment (getExecutablePath, lookupEnv, setEnv)
 import System.Exit (ExitCode (..))
+import System.IO (hClose, openTempFile)
 import System.Process (system)
 import qualified System.Info as Info
 
@@ -69,6 +71,17 @@ run :: String -> IO ()
 run c = do
   ok <- tryRun c
   when (not ok) $ failWith ("command failed: " ++ c)
+
+-- | Run a command and read what it prints; Nothing if it fails.
+readCommand :: String -> IO (Maybe String)
+readCommand c = do
+  tmp <- getTemporaryDirectory
+  (f, h) <- openTempFile tmp "miso.out"
+  hClose h
+  ok <- tryRun (c ++ " > " ++ quote (map (\x -> if x == '\\' then '/' else x) f))
+  s <- readFile' f
+  removeFile f
+  pure (if ok then Just s else Nothing)
 
 -- | Run ourselves with the arguments.
 runSelf :: String -> IO ()
