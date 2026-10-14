@@ -69,7 +69,17 @@ pins=$(awk '
 pin() {
   echo "$pins" | awk -v n="$1" '$1 == n { $1 = ""; print substr($0, 2) }'
 }
-for p in microhs mhs-ghc-compat mhs-array mhs-containers; do
+# MICROHS_SRC=DIR builds with a MicroHs checkout instead of the pinned one
+# (to try a MicroHs change before the miso flake pins it).
+if [ -n "${MICROHS_SRC:-}" ]; then
+  say "using MicroHs from $MICROHS_SRC"
+  mkdir -p "$work/src/microhs"
+  (cd "$MICROHS_SRC" && git ls-files -z | xargs -0 tar -cf - ) | tar -xf - -C "$work/src/microhs"
+  github_pins="mhs-ghc-compat mhs-array mhs-containers"
+else
+  github_pins="microhs mhs-ghc-compat mhs-array mhs-containers"
+fi
+for p in $github_pins; do
   set -- $(pin $p)
   [ $# -eq 3 ] || { echo "no pin for $p in miso's nix/source.nix" >&2; exit 1; }
   github "$p" "$1" "$2" "$3"
