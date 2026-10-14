@@ -77,7 +77,7 @@ or a commit; HEAD without one) is at:
 # miso.lock: written by miso update.  Commit it; do not edit it.
 # Local (path:) dependencies are not locked.
 miso: 0.1.0
-mhs: 0.16.7.0
+mhs: 0.16.10.0
 packages:
   - name: split
     hackage: 0.2.5.1
@@ -122,7 +122,7 @@ The release tarball is laid out as an mhs installation:
 ```
 miso-aarch64-darwin/
   bin/miso, bin/cpphs (for modules with CPP)
-  mhs-0.16.7.0/        the package database: base, miso, ..., and the runtime sources
+  mhs-0.16.10.0/       the package database: base, miso, ..., and the runtime sources
 ```
 
 MicroHs and the package database with miso come from the
