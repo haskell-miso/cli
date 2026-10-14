@@ -85,10 +85,36 @@ mhssrc=$work/src/microhs
 # On Windows this runs in MSYS2's POSIX environment (msystem MSYS), where
 # MicroHs builds with its unix configuration (its mingw one has bit-rotted).
 conf=unix
+if [ -n "$windows" ]; then
+  # MicroHs's installer copies each binary and then its permissions, with
+  # set_permissions: open(O_RDONLY) and fchmod.  In MSYS2 fchmod through a
+  # read-only handle fails (EACCES), so make install stops at the first copy
+  # with "setPermissions: permission denied".  chmod of the path works.
+  extra=$mhssrc/src/runtime/unix/extra.c
+  sed -e 's/^  result = fchmod(fd, uperms);$/  result = chmod(path, uperms);/' "$extra" > "$extra.tmp"
+  mv "$extra.tmp" "$extra"
+  grep -q '^  result = chmod(path, uperms);$' "$extra" || { echo "could not patch set_permissions in $extra" >&2; exit 1; }
+  # get_executable_path (and its #includes) knows Linux and macOS only, so in
+  # MSYS2 (Cygwin) mhs, and miso, take "." for their bin directory and find
+  # no packages.  MSYS2 has /proc/self/exe, as Linux does.
+  sed -e 's/^#if defined(__linux__)$/#if defined(__linux__) || defined(__CYGWIN__)/' "$extra" > "$extra.tmp"
+  mv "$extra.tmp" "$extra"
+  grep -q '^#if defined(__linux__) || defined(__CYGWIN__)$' "$extra" || { echo "could not patch get_executable_path in $extra" >&2; exit 1; }
+fi
 (cd "$mhssrc" && make CONF=$conf bin/mhs bin/cpphs bin/mcabal)
 export CABALDIR=$prefix HOME=$work/home
 mkdir -p "$HOME"
 (cd "$mhssrc" && make CONF=$conf MCABAL="$prefix" install)
+if [ -n "$windows" ]; then
+  # With the unix configuration the installer copies bin/mhs (gcc's
+  # bin/mhs.exe, which MSYS2 also finds without the .exe) to bin/mhs,
+  # without .exe; give the installed programs their .exe back.
+  for b in mhs cpphs mcabal; do
+    if [ ! -f "$prefix/bin/$b.exe" ]; then
+      mv "$prefix/bin/$b" "$prefix/bin/$b.exe"
+    fi
+  done
+fi
 version=$(cd "$prefix" && ls -d mhs-* | head -1 | sed 's/^mhs-//')
 db=$prefix/mhs-$version
 # mcabal runs mhs from the PATH

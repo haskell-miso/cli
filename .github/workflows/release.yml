@@ -42,7 +42,12 @@ jobs:
           path: result/*
 
   build-intel-mac:
-    runs-on: macos-13
+    # GitHub retired the macos-13 image (jobs wait for it forever);
+    # macos-15-intel is the free Intel runner.
+    runs-on: macos-15-intel
+    env:
+      # run on macOS 13 and later, not only on the runner's macOS 15
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
       - uses: actions/checkout@v5
       - name: Build
