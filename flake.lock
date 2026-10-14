@@ -60,15 +60,15 @@
     "microcabal": {
       "flake": false,
       "locked": {
-        "lastModified": 1741723798,
-        "narHash": "sha256-/dyN4izmE72EIpMZd4V9HdEZ8FsMLOrycVtwkAim3Vw=",
-        "owner": "haskell-miso",
+        "lastModified": 1791183108,
+        "narHash": "sha256-HgO65DycYCZy8jlH/+Wsrd9gA5Ktppqio8A04Z8rvvQ=",
+        "owner": "augustss",
         "repo": "MicroCabal",
-        "rev": "7bb05d4977caa03e7d3019965fe33f032cabea27",
+        "rev": "50d46256e077295f0e4d4d374af9a837ba812569",
         "type": "github"
       },
       "original": {
-        "owner": "haskell-miso",
+        "owner": "augustss",
         "repo": "MicroCabal",
         "type": "github"
       }
@@ -80,11 +80,11 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1792011769,
+        "lastModified": 1792013779,
         "narHash": "sha256-/KLDRnQ/waCOYpCxhAx7/Z+BasJ2436yQp+ze9zcJOA=",
         "owner": "dmjio",
         "repo": "miso",
-        "rev": "deef1a99dcc08c394f0588e40140455d47867634",
+        "rev": "a3e6937e0d3f26199f181d6f5d1d7352a2918a84",
         "type": "github"
       },
       "original": {

@@ -55,7 +55,7 @@ for r in "$misorev" "$mcabalrev"; do
   echo "$r" | grep -Eq '^[0-9a-f]{40}$' || { echo "bad revision in flake.lock: $r" >&2; exit 1; }
 done
 github miso dmjio miso "$misorev"
-github microcabal haskell-miso MicroCabal "$mcabalrev"
+github microcabal augustss MicroCabal "$mcabalrev"
 
 # The pins of miso's nix/source.nix: NAME OWNER REPO REV, or NAME URL.
 pins=$(awk '
