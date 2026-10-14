@@ -82,8 +82,9 @@ done
 say "building MicroHs"
 prefix=$work/prefix
 mhssrc=$work/src/microhs
+# On Windows this runs in MSYS2's POSIX environment (msystem MSYS), where
+# MicroHs builds with its unix configuration (its mingw one has bit-rotted).
 conf=unix
-[ -n "$windows" ] && conf=mingw
 (cd "$mhssrc" && make CONF=$conf bin/mhs bin/cpphs bin/mcabal)
 export CABALDIR=$prefix HOME=$work/home
 mkdir -p "$HOME"
@@ -97,16 +98,6 @@ mhs=$prefix/bin/mhs$exe
 # too would make every package ambiguous
 mcabal="$prefix/bin/mcabal$exe"
 
-if [ -n "$windows" ]; then
-  # mhs compiles programs with gcc (MinGW) instead of MSVC's cl.
-  for c in $(find "$db" -name mhs.conf); do
-    awk '
-      /^\[windows\]/ { print; print "cc = \"gcc\""; print "ccflags = \"-O2\""; print "cclibs = \"-lm\"";
-                       print "conf = \"mingw\""; print "cout = \"-o\""; skip = 1; next }
-      /^\[/ { skip = 0 }
-      !skip' "$c" > "$c.tmp" && mv "$c.tmp" "$c"
-  done
-fi
 
 # 2. The packages, as miso's nix/mhs/default.nix installs them
 inst() {
@@ -146,7 +137,6 @@ cp -R "$work/src/miso" "$work/pkg"
 # 3. The miso tool
 say "building miso"
 ldflags=
-[ -n "$windows" ] && ldflags=-static
 make MHS="$mhs" MHSSRC="$mhssrc" MCABALSRC="$work/src/microcabal" CONF=$conf EXE=$exe LDFLAGS="$ldflags"
 
 # 4. The tarball

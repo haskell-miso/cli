@@ -75,7 +75,7 @@ case ":$PATH:" in
   *) printf '\nAdd miso to your PATH:\n\n  export PATH="%s/bin:$PATH"\n\n' "$home" ;;
 esac
 if [ "$os" = windows ]; then
-  command -v gcc >/dev/null || printf 'miso builds programs with gcc: pacman -S mingw-w64-x86_64-gcc\n'
+  command -v gcc >/dev/null || printf 'miso builds programs with gcc: pacman -S gcc\n'
 else
   command -v cc >/dev/null || printf 'miso builds programs with a C compiler (cc); install one (Xcode command line tools, or gcc/clang).\n'
 fi

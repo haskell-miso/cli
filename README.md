@@ -67,6 +67,9 @@ again.
 
 ## Requirements
 
+On Windows miso runs in [MSYS2](https://www.msys2.org) (an MSYS2 shell:
+`pacman -S gcc make tar curl git`, then the install command above).
+
 - A C compiler (`cc`): mhs compiles programs to C.
 - For `target: browser`, [emscripten](https://emscripten.org) (`emcc`).
 - `curl`, `tar`, and `git` (for git dependencies).
