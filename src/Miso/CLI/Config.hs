@@ -1,6 +1,7 @@
 -- | The project file, miso.yml.
 --
 -- > name: counter
+-- > version: 0.1.0            # the version of the project (required)
 -- > main: Main                 # the main module (default Main)
 -- > source-dirs: [app]         # default [app]
 -- > target: emscripten         # an mhs target (optional, default native)
@@ -32,7 +33,7 @@ module Miso.CLI.Config
   , parseYAML
   ) where
 
-import Data.Char (isSpace)
+import Data.Char (isDigit, isSpace)
 import Data.List (isPrefixOf)
 import System.Directory (doesFileExist)
 
@@ -41,6 +42,7 @@ configFile = "miso.yml"
 
 data Config = Config
   { cfgName       :: String
+  , cfgVersion    :: String
   , cfgMain       :: String
   , cfgSourceDirs :: [FilePath]
   , cfgTarget     :: Maybe String
@@ -171,17 +173,32 @@ splitOn c s = case break (== c) s of
 toConfig :: Value -> Either String Config
 toConfig (Map kvs) = do
   name <- maybe (Left "miso.yml: missing name") str (lookup "name" kvs)
+  ver <- case lookup "version" kvs of
+           Just (Map []) -> Left missingVersion    -- "version:" with no value
+           Just v -> str v
+           Nothing -> Left missingVersion
+  checkVersion ver
   main' <- maybe (Right "Main") str (lookup "main" kvs)
   dirs <- maybe (Right ["app"]) strs (lookup "source-dirs" kvs)
   target <- maybe (Right Nothing) (fmap Just . str) (lookup "target" kvs)
   opts <- maybe (Right []) strs (lookup "mhs-options" kvs)
   deps <- maybe (Right []) depsOf (lookup "dependencies" kvs)
   mapM_ known (map fst kvs)
-  Right (Config name main' dirs target opts deps)
+  Right (Config name ver main' dirs target opts deps)
   where
-    known k | k `elem` ["name", "main", "source-dirs", "target", "mhs-options", "dependencies"] = Right ()
+    known k | k `elem` ["name", "version", "main", "source-dirs", "target", "mhs-options", "dependencies"] = Right ()
             | otherwise = Left ("miso.yml: unknown field " ++ k)
 toConfig _ = Left "miso.yml: expected fields (name: ...)"
+
+missingVersion :: String
+missingVersion = "miso.yml: missing version (every miso.yml has one, e.g. version: 0.1.0)"
+
+-- | A version is numbers separated by dots, as on Hackage: 0.1.0, 1.14.0.0.
+checkVersion :: String -> Either String ()
+checkVersion v
+  | not (null parts) && all (\p -> not (null p) && all isDigit p) parts = Right ()
+  | otherwise = Left ("miso.yml: version should be numbers separated by dots, like 0.1.0; found " ++ v)
+  where parts = splitOn '.' v
 
 str :: Value -> Either String String
 str (Str s) = Right s

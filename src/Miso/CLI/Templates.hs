@@ -26,6 +26,7 @@ templates template name =
 misoYml :: String -> String
 misoYml name = unlines
   [ "name: " ++ name
+  , "version: 0.1.0"
   , "main: Main"
   , "source-dirs: [app]"
   , "# browser: WebAssembly (needs emcc), browser_js: JavaScript, native: an executable"

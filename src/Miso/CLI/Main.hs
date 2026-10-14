@@ -155,7 +155,7 @@ build cfg = do
   createDirectoryIfMissing True outDir
   static <- doesDirectoryExist "static"
   when (static && not native) $ run "cp -R static/. public/"
-  info ("Building " ++ cfgName cfg)
+  info ("Building " ++ cfgName cfg ++ " " ++ cfgVersion cfg)
   runSelf ("mhs " ++ unwords (map quote args))
   success ("Built " ++ outFile)
   pure outFile
