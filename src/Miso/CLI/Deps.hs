@@ -17,6 +17,7 @@ import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 
 import Miso.CLI.Color
 import Miso.CLI.Config
+import Miso.CLI.Lock
 import Miso.CLI.Util
 
 -- | The record of what miso install installed, kept in the package
@@ -30,31 +31,90 @@ readStamp = do
   ok <- doesFileExist f
   if ok then lines <$> readFile' f else pure []
 
+-- | mcabal install, with the cabal flags of a dependency.
+mcabalInstall :: Dep -> IO String
+mcabalInstall d = do
+  exe <- self
+  pure (quote exe ++ " mcabal" ++ maybe "" (\f -> " -f" ++ quote f) (depFlags d) ++ " install")
+
 -- | Install the dependencies that are not installed yet.  A local checkout
--- is installed on every build, as it changes; the others once.
+-- is installed on every build, as it changes; the others once.  With a
+-- miso.lock, Hackage and git dependencies are installed at the versions and
+-- commits it has.
 installDeps :: Config -> IO ()
 installDeps cfg = do
   setupEnv
+  lock <- readLock
+  bundled <- bundledNames
+  let locked d = maybe Nothing (\l -> lockedFor l d) lock
+  case lock of
+    Nothing -> pure ()
+    Just _ ->
+      forM_ [ d | d <- cfgDeps cfg, not (isLocal d), depName d `notElem` bundled, locked d == Nothing ] $ \d ->
+        warn (depName d ++ " is not locked in " ++ lockFile ++ " (new, or changed in miso.yml); miso update locks it")
   done <- readStamp
   stamp <- stampFile
-  let local = isJust . depPath
-      todo = [ d | d <- cfgDeps cfg, local d || show d `notElem` done ]
+  -- the stamp of a locked dependency has its version or commit: a new lock installs it again
+  let key d = show d ++ maybe "" (\l -> " " ++ show l) (locked d)
+      todo = [ d | d <- cfgDeps cfg, isLocal d || key d `notElem` done ]
   if null todo
     then step "dependencies are installed"
     else forM_ todo $ \d -> do
-      info ("Installing " ++ depName d ++ maybe "" (" from " ++) (depPath d))
-      installDep d
-      unless (local d) $ appendFile stamp (show d ++ "\n")
+      info ("Installing " ++ depName d ++ maybe "" (" from " ++) (depPath d) ++ maybe "" lockedAt (locked d))
+      installDep (locked d) d
+      unless (isLocal d) $ appendFile stamp (key d ++ "\n")
+  where
+    lockedAt (LockedHackage _ v _) = " " ++ v
+    lockedAt (LockedGit _ _ _ c) = " at " ++ take 7 c
+
+-- | The names of the packages that come with the tool.
+bundledNames :: IO [String]
+bundledNames = do
+  db <- toolDb
+  let listed = db ++ "/miso-bundled"
+      dir = db ++ "/packages"
+  hasList <- doesFileExist listed
+  hasDir <- doesDirectoryExist dir
+  pkgs <- if hasList then lines <$> readFile' listed
+          else if hasDir then filter (".pkg" `isSuffixOf'`) <$> listDirectory dir
+          else pure []
+  pure [ nameOf p | p <- pkgs, ".pkg" `isSuffixOf'` p ]
+  where
+    -- name-1.2.3.pkg
+    nameOf p = reverse (drop 1 (dropWhile (/= '-') (reverse (take (length p - 4) p))))
 
 gitDir :: Dep -> IO FilePath
 gitDir d = do
   home <- misoHome
   pure (home ++ "/src/" ++ depName d ++ "-" ++ maybe "HEAD" (map (\c -> if c == '/' then '-' else c)) (depRev d))
 
-installDep :: Dep -> IO ()
-installDep d = do
-  exe <- self
-  let mcabal = quote exe ++ " mcabal" ++ maybe "" (\f -> " -f" ++ quote f) (depFlags d) ++ " install"
+installDep :: Maybe Locked -> Dep -> IO ()
+installDep (Just (LockedHackage n v h)) d = do
+  -- the version of the lock, from Hackage, checked against its sha256
+  home <- misoHome
+  tarball <- hackageTarball n v
+  h' <- sha256File tarball
+  when (h' /= h) $ do
+    run ("rm -f " ++ quote tarball)
+    failWith (n ++ "-" ++ v ++ ": the sha256 of the tarball is " ++ h' ++ ", " ++ lockFile ++ " has " ++ h)
+  let dir = home ++ "/src/hackage/" ++ n ++ "-" ++ v
+  unpacked <- doesDirectoryExist dir
+  unless unpacked $ run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
+  mcabal <- mcabalInstall d
+  run ("cd " ++ quote dir ++ " && " ++ mcabal)
+installDep (Just (LockedGit n repo _ c)) d = do
+  -- the commit of the lock
+  home <- misoHome
+  let dir = home ++ "/src/" ++ n ++ "-" ++ c
+  cloned <- doesDirectoryExist dir
+  unless cloned $ do
+    step ("cloning " ++ repo)
+    run ("git clone --quiet " ++ quote repo ++ " " ++ quote dir)
+    run ("git -C " ++ quote dir ++ " checkout --quiet " ++ quote c)
+  mcabal <- mcabalInstall d
+  run ("cd " ++ quote dir ++ " && " ++ mcabal)
+installDep Nothing d = do
+  mcabal <- mcabalInstall d
   case (depGit d, depPath d) of
     (_, Just dir) -> do
       ok <- doesDirectoryExist dir
@@ -202,22 +262,33 @@ listPackages = do
 -----------------------------------------------------------------------------
 -- miso update
 
--- | Refresh the package list, and fetch the git dependencies again (a
--- branch moves); then install what changed.
+-- | Lock the Hackage and git dependencies in miso.lock: Hackage packages at
+-- their newest version (with the sha256 of the tarball), git dependencies at
+-- the commit their rev (or HEAD) is now.  Local dependencies, and the packages
+-- that come with the tool, are not locked.  Then install what changed.
 updateDeps :: Config -> IO ()
 updateDeps cfg = do
   setupEnv
+  -- mcabal installs the dependencies of the dependencies from its package list
   info "Updating the package list"
   runSelf "mcabal update"
-  let gits = [ d | d <- cfgDeps cfg, isJust (depGit d) ]
-  forM_ gits $ \d -> do
-    dir <- gitDir d
-    there <- doesDirectoryExist dir
-    when there $ do
-      step ("fetching " ++ depName d)
-      run ("rm -rf " ++ quote dir)
-  unless (null gits) $ do
-    stamp <- stampFile
-    done <- readStamp
-    writeFile stamp (unlines [ l | l <- done, l `notElem` map show gits ])
+  old <- maybe [] id <$> readLock
+  bundled <- bundledNames
+  info ("Locking the dependencies in " ++ lockFile)
+  new <- fmap concat $ mapM (lockDep old bundled) (cfgDeps cfg)
+  writeLock new
+  case describeChanges old new of
+    [] -> success (lockFile ++ " is up to date")
+    changes -> do
+      mapM_ step changes
+      success ("Wrote " ++ lockFile)
   installDeps cfg
+  where
+    lockDep old bundled d
+      | isLocal d = do
+          step (depName d ++ ": local, not locked")
+          pure []
+      | isHackage d && depName d `elem` bundled = do
+          step (depName d ++ ": comes with miso, not locked")
+          pure []
+      | otherwise = (: []) <$> resolveDep old d

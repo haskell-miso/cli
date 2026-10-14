@@ -24,6 +24,11 @@ main = putStrLn "cpp did not run"
 HS
 out=$(miso run | tail -1 | tr -d '\r')
 [ "$out" = hello ] || { echo "smoke test: expected hello, got: $out" >&2; exit 1; }
+# miso update locks split in miso.lock, and the build installs that version
+miso update
+grep -q '^    hackage: ' miso.lock || { echo "smoke test: miso update did not lock split" >&2; cat miso.lock >&2; exit 1; }
+out=$(miso run | tail -1 | tr -d '\r')
+[ "$out" = hello ] || { echo "smoke test: expected hello with miso.lock, got: $out" >&2; exit 1; }
 miso doctor
 miso list
 # serve: a page from public/

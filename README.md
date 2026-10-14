@@ -29,7 +29,7 @@ miso build            # public/index.js (target: browser)
 | `miso install` | install the dependencies of `miso.yml` |
 | `miso add PKG...` / `miso remove PKG...` | edit the dependencies of `miso.yml` (keeping its comments), and install |
 | `miso list` | the installed packages: those that come with miso, and those you installed |
-| `miso update` | refresh the package list, and fetch git dependencies again (a branch moves) |
+| `miso update` | lock the Hackage and git dependencies in `miso.lock` (newest versions, current commits), and install them |
 | `miso doctor` | check the installation and the tools miso needs, and say how to fix what is missing |
 | `miso upgrade [VERSION]` | install the latest release (or `VERSION`) in place |
 | `miso mhs ARGS` / `miso mcabal ARGS` | the MicroHs compiler, and MicroCabal |
@@ -64,6 +64,39 @@ Other packages are installed next to them, in `~/.miso/mhs-VERSION`
 (`install.sh` unpacks the tool in `$MISO_HOME`, default `~/.miso`); a new
 release starts with a fresh package database, and `miso build` installs them
 again.
+
+## miso.lock
+
+`miso update` writes `miso.lock`, next to `miso.yml`; commit it.  It has, for
+each dependency from Hackage, its newest version and the sha256 of its
+tarball, and for each git dependency the commit its `rev` (a branch, a tag,
+or a commit; HEAD without one) is at:
+
+```yaml
+# miso.lock: written by miso update.  Commit it; do not edit it.
+# Local (path:) dependencies are not locked.
+miso: 0.1.0
+mhs: 0.16.7.0
+packages:
+  - name: split
+    hackage: 0.2.5.1
+    sha256: 18adb60f7f12d08601c382d47c2bacbbd4de4b9233f09683889d15b64b6420d6
+  - name: lens-family
+    git: https://github.com/example/lens-family
+    rev: v2.1.3
+    commit: 8fa9e00cca7db83a3270e12943f1820dad1f2472
+```
+
+`miso build` and `miso install` then install exactly that: the Hackage
+tarball of that version (checked against its sha256), and the git commit,
+until the next `miso update`.  Local (`path:`) dependencies are not locked
+(they are installed from the directory on every build), and neither are the
+packages that come with the tool.  A dependency that is not in `miso.lock`
+(added to `miso.yml` since, or with a different `git`/`rev`) is installed as
+without a lock, with a warning; without a `miso.lock` nothing changes.
+
+Only the dependencies listed in `miso.yml` are locked: the packages they
+depend on are still installed by mcabal, from its package list.
 
 ## Requirements
 
