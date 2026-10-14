@@ -94,6 +94,12 @@ if [ -n "$windows" ]; then
   sed -e 's/^  result = fchmod(fd, uperms);$/  result = chmod(path, uperms);/' "$extra" > "$extra.tmp"
   mv "$extra.tmp" "$extra"
   grep -q '^  result = chmod(path, uperms);$' "$extra" || { echo "could not patch set_permissions in $extra" >&2; exit 1; }
+  # get_executable_path (and its #includes) knows Linux and macOS only, so in
+  # MSYS2 (Cygwin) mhs, and miso, take "." for their bin directory and find
+  # no packages.  MSYS2 has /proc/self/exe, as Linux does.
+  sed -e 's/^#if defined(__linux__)$/#if defined(__linux__) || defined(__CYGWIN__)/' "$extra" > "$extra.tmp"
+  mv "$extra.tmp" "$extra"
+  grep -q '^#if defined(__linux__) || defined(__CYGWIN__)$' "$extra" || { echo "could not patch get_executable_path in $extra" >&2; exit 1; }
 fi
 (cd "$mhssrc" && make CONF=$conf bin/mhs bin/cpphs bin/mcabal)
 export CABALDIR=$prefix HOME=$work/home
