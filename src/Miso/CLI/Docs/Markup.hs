@@ -12,7 +12,7 @@ module Miso.CLI.Docs.Markup
   , plainText
   ) where
 
-import Data.Char (isAlpha, isAlphaNum, isDigit, isSpace, isUpper)
+import Data.Char (chr, isAlpha, isAlphaNum, isDigit, isHexDigit, isSpace, isUpper)
 import Data.List (isPrefixOf, isSuffixOf)
 
 data Block
@@ -20,6 +20,7 @@ data Block
   | CodeBlock String              -- ^ code, highlighted later
   | Pre [Inline]                  -- ^ an @ block with markup in it
   | Example String [String]
+  | Property String               -- ^ prop> a QuickCheck property
   | Bullets [[Block]]
   | Numbered [[Block]]
   | Definitions [([Inline], [Block])]
@@ -111,6 +112,7 @@ parseDoc r = blocks
       | ">>>" `isPrefixOf` t =
           let (res, rest) = break (\x -> blank x || ">>>" `isPrefixOf` trim x) ls
           in Example (trim (drop 3 t)) (map trim res) : blocks rest
+      | "prop>" `isPrefixOf` t = Property (trim (drop 5 t)) : blocks ls
       | isBird l =
           let (code, rest) = span isBird (l : ls)
           in CodeBlock (unlines' (map unbird code)) : blocks rest
@@ -135,7 +137,7 @@ parseDoc r = blocks
           in Para (inlines (unwords (map trim (l : para)))) : blocks rest
       where t = trim l
 
-    stop x = blank x || isBird x || startsBlock (trim x) || isTableLine (trim x)
+    stop x = blank x || isBird x || startsBlock (trim x) || isTableLine (trim x) || "prop>" `isPrefixOf` trim x
              || "@since" `isPrefixOf` trim x || "\\[" `isPrefixOf` trim x
 
     isBird x = ">" `isPrefixOf` x && not (">>>" `isPrefixOf` x)
@@ -257,6 +259,9 @@ parseDoc r = blocks
       '\\' : '(' : cs | (m, _ : _ : rest) <- breakOn "\\)" cs -> Math m : go rest
       '\\' : '[' : cs | (m, _ : _ : rest) <- breakOn "\\]" cs -> Math m : go rest
       '\\' : c : cs -> Str [c] : go cs
+      '&' : '#' : cs | Just (c, rest) <- charRef cs -> Str [c] : go rest
+      '!' : '[' : cs | (alt, ']' : '(' : more) <- break (== ']') cs, (url, ')' : rest) <- break (== ')') more ->
+        Image url alt : go rest
       '<' : '<' : cs | (u, '>' : '>' : rest) <- breakOn ">>" cs ->
         let (url, title) = break isSpace u in Image url (trim title) : go rest
       '@' : cs | not keep, (code, '@' : rest) <- breakEsc (== '@') cs ->
@@ -290,7 +295,18 @@ parseDoc r = blocks
             '\'' : cs | not (null w) && isAlphaNum (last w) -> Str (w ++ "'") : go cs
             _ -> Str w : go rest
 
-    special c = c `elem` "\\@`'\"_/<[#" || isSpace c
+    special c = c `elem` "\\@`'\"_/<[#&!" || isSpace c
+
+    -- &#123; and &#x7b;
+    charRef cs = case cs of
+      x : rest | x `elem` "xX", (h@(_ : _), ';' : rest') <- span isHexDigit rest -> Just (chr (readHex h), rest')
+      _ | (d@(_ : _), ';' : rest') <- span isDigit cs -> Just (chr (read d), rest')
+      _ -> Nothing
+    readHex = foldl (\n c -> n * 16 + hexDigit c) 0
+    hexDigit c
+      | isDigit c = fromEnum c - fromEnum '0'
+      | c >= 'a' && c <= 'f' = fromEnum c - fromEnum 'a' + 10
+      | otherwise = fromEnum c - fromEnum 'A' + 10
 
     breakEsc p xs = case xs of
       '\\' : c : cs -> let (a, b) = breakEsc p cs in ('\\' : c : a, b)

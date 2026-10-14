@@ -42,8 +42,8 @@
   <body>
     <div class="loading"><span class="loading-mark">λ</span></div>
     <script>
-      // Scroll to what the hash names once miso has drawn it, and focus the
-      // search box on "/".
+      // Scroll to what the hash names once miso has drawn it, and open the
+      // search palette on "/" or Ctrl-K / Cmd-K.
       (function () {
         function target() {
           var h = decodeURIComponent(location.hash.replace(/^#/, ""));
@@ -75,6 +75,10 @@
           var mod = document.querySelector(".module-title");
           var now = mod && !document.querySelector(".skeleton") ? location.hash : null;
           if (now && now !== drawn) { drawn = now; scroll(); }
+          // the palette's input, when it opens
+          var pi = document.getElementById("palette-input");
+          if (pi && !pi.hasAttribute("data-focused")) { pi.setAttribute("data-focused", ""); pi.focus(); }
+          document.body.classList.toggle("palette-open", !!pi);
           // math, with KaTeX (when it has loaded)
           if (window.katex) {
             document.querySelectorAll(".math:not([data-done])").forEach(function (el) {
@@ -85,10 +89,12 @@
             });
           }
         }).observe(document.body, { childList: true, subtree: true });
+        window.misoDocsGo = function (h) { location.hash = h; };
         document.addEventListener("keydown", function (e) {
-          var s = document.getElementById("search");
-          if (e.key === "/" && s && document.activeElement !== s) { e.preventDefault(); s.focus(); }
-          if (e.key === "Escape" && s && document.activeElement === s) { s.blur(); }
+          var typing = /^(INPUT|TEXTAREA)$/.test((document.activeElement || {}).tagName || "");
+          var open = (e.key === "/" && !typing) || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k");
+          var b = document.getElementById("search-button");
+          if (open && b && !document.getElementById("palette-input")) { e.preventDefault(); b.click(); }
         });
       })();
     </script>

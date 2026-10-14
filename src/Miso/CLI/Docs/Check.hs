@@ -13,7 +13,7 @@ import MicroHs.Expr (showEType, showExprRaw)
 import MicroHs.Flags (Flags (..), defaultFlags)
 import MicroHs.Ident (mkIdent, unIdent)
 import MicroHs.SymTab (Entry (..))
-import MicroHs.TypeCheck (TModule (..), ValueExport (..))
+import MicroHs.TypeCheck (TModule (..), ValueExport (..), isInstId)
 
 import Miso.CLI.Docs.Extract (Checked (..))
 import Miso.CLI.Docs.Lex (Kind (..), Tok (..), lexHaskell)
@@ -30,15 +30,24 @@ typeCheck dirs cpp mods = do
         , cppArgs = cpp, noCode = True, verbose = -1 }
   r <- try $ do
     cache <- compileMany flags (map mkIdent mods) emptyCache
-    let checked = M.fromList [ (unIdent (tModuleName tm), map export (tValueExps tm)) | tm <- getCompMdls cache ]
-    _ <- evaluate (sum [ length a + length b + length c | es <- M.elems checked, (a, b, c) <- es ])
-    pure checked
+    let tms = getCompMdls cache
+        values = M.fromList [ (unIdent (tModuleName tm), map export (tValueExps tm)) | tm <- tms ]
+        insts = M.fromList [ (unIdent (tModuleName tm), [ instanceHead (unIdent i) | (i, _) <- tBindingsOf tm, isInstId i ]) | tm <- tms ]
+    _ <- evaluate (sum [ length a + length b + length c | es <- M.elems values, (a, b, c) <- es ]
+                   + sum (map length (concat (M.elems insts))))
+    pure (Checked values insts)
   pure $ case r of
-    Right m -> Right (Checked m)
+    Right c -> Right c
     Left e -> Left (firstLine (show (e :: SomeException)))
   where
-    firstLine = takeWhile (/= '\n')
+    -- mhs says where, then on the next line what
+    firstLine = unwords . map (dropWhile (== ' ')) . take 2 . lines
     export (ValueExport i (Entry qi t)) = (unIdent i, cleanType (showEType t), qualifier (showExprRaw qi))
+
+-- | The head of an instance from the name of its dictionary:
+-- inst$Data.Eq.Eq@(M.T@a) is Eq (T a).
+instanceHead :: String -> String
+instanceHead n = cleanType (map (\c -> if c == '@' then ' ' else c) (drop 1 (dropWhile (/= '$') n)))
 
 -- | The module of a qualified name: Data.Map.insert, Data.Map.!
 qualifier :: String -> String

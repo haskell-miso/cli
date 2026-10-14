@@ -27,6 +27,7 @@ data Summary = Summary
   , sumText    :: [Inline]
   , sumLines   :: Int
   , sumExports :: Int
+  , sumHidden  :: Bool
   }
 
 -- | A name for search: name, kind, module, anchor.
@@ -37,6 +38,7 @@ data Module = Module
   , modDoc    :: [Block]
   , modItems  :: [Item]
   , modSource :: [MisoString]   -- ^ highlighted HTML, a line each
+  , modHeader :: [(MisoString, MisoString)]  -- ^ Copyright, License, ...
   }
 
 -- | Modules are equal when they have the same name: a module is loaded once.
@@ -63,6 +65,9 @@ data Declaration = Declaration
   , declEnd        :: Int
   , declFrom       :: MisoString
   , declDeprecated :: MisoString
+  , declWarning    :: MisoString   -- ^ "deprecated", "warning", or ""
+  , declFixity     :: MisoString
+  , declMinimal    :: MisoString
   }
 
 data Sub = Sub
@@ -88,6 +93,7 @@ data Block
   | CodeBlock MisoString                -- ^ highlighted HTML
   | Pre [Inline]
   | Example MisoString [MisoString]
+  | QuickCheck MisoString        -- ^ prop>
   | Bullets [[Block]]
   | Numbered [[Block]]
   | Definitions [([Inline], [Block])]
@@ -118,7 +124,7 @@ instance FromJSON Index where
 
 instance FromJSON Summary where
   parseJSON = withObject "Summary" $ \o ->
-    Summary <$> o .: "n" <*> o .: "sum" <*> o .: "lines" <*> o .: "exports"
+    Summary <$> o .: "n" <*> o .: "sum" <*> o .: "lines" <*> o .: "exports" <*> (maybe False id <$> o .:? "hidden")
 
 instance FromJSON Def where
   parseJSON = withArray "Def" $ \case
@@ -128,6 +134,7 @@ instance FromJSON Def where
 instance FromJSON Module where
   parseJSON = withObject "Module" $ \o ->
     Module <$> o .: "name" <*> o .: "doc" <*> o .: "items" <*> o .: "src"
+      <*> (map (\(Pair k v) -> (k, v)) <$> opt o "header")
 
 instance FromJSON Item where
   parseJSON = withArray "Item" $ \case
@@ -141,7 +148,7 @@ instance FromJSON Declaration where
   parseJSON = withObject "Declaration" $ \o ->
     Declaration <$> o .: "n" <*> o .: "a" <*> o .: "k" <*> o .: "s" <*> o .: "d"
       <*> opt o "m" <*> opt o "c" <*> (map pair <$> opt o "args") <*> opt o "i"
-      <*> o .: "l" <*> o .: "e" <*> o .: "f" <*> (maybe "" id <$> o .:? "dep")
+      <*> o .: "l" <*> o .: "e" <*> o .: "f" <*> str o "dep" <*> str o "wk" <*> str o "fx" <*> str o "min"
     where pair (Pair a b) = (a, b)
 
 instance FromJSON Sub where
@@ -160,6 +167,10 @@ instance (FromJSON a, FromJSON b) => FromJSON (Pair a b) where
     [a, b] -> Pair <$> parseJSON a <*> parseJSON b
     _ -> fail "Pair"
 
+-- | A string that is left out when it is empty.
+str :: M.Map MisoString Value -> MisoString -> Parser MisoString
+str o k = maybe "" id <$> o .:? k
+
 -- | A list that is left out when it is empty.
 opt :: FromJSON a => M.Map MisoString Value -> MisoString -> Parser [a]
 opt o k = maybe [] id <$> o .:? k
@@ -170,6 +181,7 @@ instance FromJSON Block where
     [J.String "code", c] -> CodeBlock <$> parseJSON c
     [J.String "pre", is] -> Pre <$> parseJSON is
     [J.String "ex", e, rs] -> Example <$> parseJSON e <*> parseJSON rs
+    [J.String "prop", e] -> QuickCheck <$> parseJSON e
     [J.String "ul", xs] -> Bullets <$> parseJSON xs
     [J.String "ol", xs] -> Numbered <$> parseJSON xs
     [J.String "dl", xs] -> Definitions . map (\(Pair a b) -> (a, b)) <$> parseJSON xs

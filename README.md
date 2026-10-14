@@ -172,8 +172,17 @@ in the highlighted module source.  `module M` in an export list puts M's
 exports there.  Haddock's markup: paragraphs, `@...@` and bird track code,
 `>>>` examples, nested lists, definition lists, grid tables, headings,
 `@since`, links, images, anchors, `'identifier'` and `"Module"` references,
-and math (`\(...\)`, `\[...\]`, drawn with KaTeX).  Search (`/`) finds modules
-and names; the theme follows the system, or the button.
+and math (`\(...\)`, `\[...\]`, drawn with KaTeX), `prop>`, markdown
+images and character references.  Fixities, `MINIMAL` pragmas, `WARNING`s and
+the fields of a module header are shown, and `OPTIONS_HADDOCK` `hide`,
+`prune`, `ignore-exports` and `not-home` are followed (a name links to the
+page of a module that shows it).  The types in signatures link to their
+declarations, and the names in the source to theirs.
+
+Search is a palette (`/`, or Ctrl-K / Cmd-K): modules and names as you type,
+the arrows to choose, enter to go.  `#/:index` lists every name, A to Z, and
+`docs/NAME.txt` is a Hoogle database of the package.  The theme follows the
+system, or the button.
 
 base, containers, mtl, transformers, array, and miso come with the tool.
 Other packages are installed next to them, in `~/.miso/mhs-VERSION`

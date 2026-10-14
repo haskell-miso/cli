@@ -8,7 +8,9 @@ module Miso.CLI.Docs.Lex
   , significant
   , tokEndLine
   , highlight
+  , highlightLinked
   , highlightLines
+  , highlightLinesLinked
   , escapeHtml
   ) where
 
@@ -124,7 +126,7 @@ lexHaskell = go 1 1
            _ -> (w, r)
 
     identKind w
-      | w `elem` keywords = Keyword
+      | isKeyword w = Keyword
       | isSym (last w) = Op
       | isUpper (head (lastPart w)) = Con
       | otherwise = Var
@@ -136,7 +138,19 @@ isIdChar :: Char -> Bool
 isIdChar ch = isAlphaNum ch || ch == '_' || ch == '\''
 
 isSym :: Char -> Bool
-isSym ch = ch `elem` "!#$%&*+./<=>?@\\^|-~:" || (ch > '\x7f' && not (isAlphaNum ch) && not (isSpace ch) && ch `notElem` "()[]{},;`'\"")
+isSym ch
+  | ch < '\x7f' = case ch of
+      '!' -> True; '#' -> True; '$' -> True; '%' -> True; '&' -> True; '*' -> True; '+' -> True
+      '.' -> True; '/' -> True; '<' -> True; '=' -> True; '>' -> True; '?' -> True; '@' -> True
+      '\\' -> True; '^' -> True; '|' -> True; '-' -> True; '~' -> True; ':' -> True
+      _ -> False
+  | otherwise = not (isAlphaNum ch) && not (isSpace ch)
+
+-- | Whether a word is a keyword (by its first letter, then the list).
+isKeyword :: String -> Bool
+isKeyword w = case w of
+  c : _ | c >= 'c' && c <= 'w' -> w `elem` keywords
+  _ -> False
 
 keywords :: [String]
 keywords =
@@ -148,8 +162,11 @@ keywords =
 -- HTML
 
 escapeHtml :: String -> String
-escapeHtml = concatMap esc
+escapeHtml s
+  | not (any special s) = s
+  | otherwise = concatMap esc s
   where
+    special c = c == '<' || c == '>' || c == '&' || c == '"'
     esc '<' = "&lt;"
     esc '>' = "&gt;"
     esc '&' = "&amp;"
@@ -172,30 +189,43 @@ cls k =
 
 -- | Highlighted HTML, with the tokens of a name stressed.
 highlight :: (Tok -> Bool) -> [Tok] -> String
-highlight isName = concatMap tok
+highlight isName = highlightLinked isName (const "")
+
+-- | Highlighted HTML, with the tokens of a name stressed, and identifiers
+-- linked to a URL (or "" for none).
+highlightLinked :: (Tok -> Bool) -> (Tok -> String) -> [Tok] -> String
+highlightLinked isName link = concatMap tok
   where
     tok t
       | isName t = span' "hl-name" (tText t)
-      | otherwise = span' (cls (tKind t)) (tText t)
+      | otherwise = linked (link t) (span' (cls (tKind t)) (tText t))
 
 -- | Highlighted HTML, a string for each line (its spans closed in it).
 highlightLines :: [Tok] -> [String]
-highlightLines ts =
-  let ls = splitLines [ (cls (tKind t), tText t) | t <- ts ]
+highlightLines = highlightLinesLinked (const "")
+
+-- | Highlighted HTML, a string for each line, with identifiers linked.
+highlightLinesLinked :: (Tok -> String) -> [Tok] -> [String]
+highlightLinesLinked link ts =
+  let ls = splitLines [ (cls (tKind t), link t, tText t) | t <- ts ]
       ls' = if not (null ls) && null (last ls) then init ls else ls
-  in [ concat [ span' c s | (c, s) <- l ] | l <- ls' ]
+  in [ concat [ linked u (span' c s) | (c, u, s) <- l ] | l <- ls' ]
+
+linked :: String -> String -> String
+linked "" h = h
+linked u h = "<a class=\"hl-link\" href=\"" ++ escapeHtml u ++ "\">" ++ h ++ "</a>"
 
 -- | Segments split at their newlines into lines of segments.
-splitLines :: [(String, String)] -> [[(String, String)]]
+splitLines :: [(String, String, String)] -> [[(String, String, String)]]
 splitLines = go []
   where
     go cur [] = [reverse cur]
-    go cur ((c, s) : rest) =
+    go cur ((c, u, s) : rest) =
       case break (== '\n') s of
-        (a, []) -> go (add c a cur) rest
-        (a, _ : b) -> reverse (add c a cur) : go [] ((c, b) : rest)
-    add _ [] cur = cur
-    add c a cur = (c, a) : cur
+        (a, []) -> go (add c u a cur) rest
+        (a, _ : b) -> reverse (add c u a cur) : go [] ((c, u, b) : rest)
+    add _ _ [] cur = cur
+    add c u a cur = (c, u, a) : cur
 
 span' :: String -> String -> String
 span' "" s = escapeHtml s

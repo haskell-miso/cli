@@ -64,6 +64,7 @@ docs args cfg = do
   step ("read " ++ plural (length mods) "module" ++ ", " ++ plural ndecls "export")
   createDirectoryIfMissing True (out ++ "/data")
   writeFile (out ++ "/data/index.js") (indexScript pkg)
+  writeFile (out ++ "/" ++ cfgName cfg ++ ".txt") (hoogle pkg)
   forM_ (pkgModules pkg) $ \m -> writeFile (out ++ "/data/" ++ dataFileName (modName m)) (moduleScript m)
   viewer <- buildViewer
   copyFile' viewer (out ++ "/index.js")

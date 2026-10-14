@@ -10,6 +10,7 @@
 -- > #/M.N/ANCHOR       a declaration (or constructor, field) of a module
 -- > #/M.N/src          the source of a module
 -- > #/M.N/src/L-E      the source, with lines L to E marked
+-- > #/:index           every name, A to Z
 --
 -- The hash is read from window.location (miso's URI parser does not take
 -- these hashes).  The script of index.html loads data files, scrolls to
@@ -31,6 +32,7 @@ import Docs.Types
 
 data Route
   = Home
+  | IndexPage
   | ModulePage MisoString
   | SourcePage MisoString Int Int  -- ^ a module, and the lines to mark (0 0 for none)
   deriving (Eq)
@@ -45,6 +47,8 @@ data Model = Model
   , menuOpen :: Bool
   , loaded   :: M.Map MisoString Module
   , missing  :: [MisoString]
+  , palette  :: Bool          -- ^ the search palette is open
+  , selected :: Int           -- ^ the result it has selected
   } deriving (Eq)
 
 data Action
@@ -53,6 +57,10 @@ data Action
   | NextTheme
   | ToggleMenu
   | Loaded MisoString (Maybe MisoString)
+  | OpenPalette
+  | ClosePalette
+  | PaletteKey KeyCode
+  | Select Int
 
 main :: IO ()
 main = do
@@ -60,7 +68,7 @@ main = do
   raw <- getData "index"
   case maybe (Left "no data/index.js") eitherDecode raw of
     Left e -> startApp defaultEvents (component () (\_ -> pure ()) (\_ -> broken e))
-    Right ix -> startApp defaultEvents (app ix (Model (routeOf h) "" System False M.empty []))
+    Right ix -> startApp defaultEvents (app ix (Model (routeOf h) "" System False M.empty [] False 0))
 
 -- | The page when the data cannot be read.
 broken :: MisoString -> View context props () action
@@ -118,11 +126,32 @@ update_ ix = \case
     case r >>= either (const Nothing) Just . eitherDecode of
       Just mo -> modify (\m -> m { loaded = M.insert mn mo (loaded m) })
       Nothing -> modify (\m -> m { missing = mn : missing m })
-  SetQuery q -> modify (\m -> m { query = q })
+  SetQuery q -> modify (\m -> m { query = q, selected = 0 })
+  OpenPalette -> modify (\m -> m { palette = True, selected = 0 })
+  ClosePalette -> modify (\m -> m { palette = False })
+  Select i -> modify (\m -> m { selected = i })
+  PaletteKey (KeyCode k) -> do
+    m <- get
+    let rs = results ix (query m)
+        n = length rs
+    case k of
+      27 -> modify (\m' -> m' { palette = False })
+      40 -> modify (\m' -> m' { selected = if n == 0 then 0 else (selected m' + 1) `mod` n })
+      38 -> modify (\m' -> m' { selected = if n == 0 then 0 else (selected m' - 1) `mod` n })
+      13 -> case drop (selected m) rs of
+        r : _ -> do
+          modify (\m' -> m' { palette = False, query = "" })
+          io_ (go (resHref r))
+        [] -> pure ()
+      _ -> pure ()
   NextTheme -> modify (\m -> m { theme = next (theme m) })
   ToggleMenu -> modify (\m -> m { menuOpen = not (menuOpen m) })
   where
     known mn = mn `elem` map sumName (ixModules ix)
+    go href = do
+      w <- jsg "window"
+      _ <- w # "misoDocsGo" $ href
+      pure ()
     next System = Dark
     next Dark = Light
     next Light = System
@@ -135,6 +164,7 @@ routeOf :: MisoString -> Route
 routeOf h =
   case filter (not . S.null) (S.splitOn "/" (S.dropWhile (== '#') h)) of
     [] -> Home
+    [":index"] -> IndexPage
     [mn] -> ModulePage mn
     [mn, "src"] -> SourcePage mn 0 0
     [mn, "src", l] -> sourceAt mn (S.unpack l)
@@ -150,12 +180,14 @@ routeOf h =
 hashOf :: Route -> MisoString
 hashOf = \case
   Home -> "#/"
+  IndexPage -> "#/:index"
   ModulePage mn -> "#/" <> mn
   SourcePage mn l e -> sourceHref mn l e
 
 routeModule :: Route -> Maybe MisoString
 routeModule = \case
   Home -> Nothing
+  IndexPage -> Nothing
   ModulePage mn -> Just mn
   SourcePage mn _ _ -> Just mn
 
@@ -188,6 +220,7 @@ view_ ix m =
         , H.main_ [ P.class_ "content" ] (page ix m)
         , toc m
         ]
+    , if palette m then searchPalette ix m else text ""
     ]
 
 topBar :: Index -> Model -> View context props Model Action
@@ -199,15 +232,9 @@ topBar ix m =
         , H.span_ [ P.class_ "brand-name" ] [ text (ixName ix) ]
         , H.span_ [ P.class_ "version" ] [ text (ixVersion ix) ]
         ]
-    , H.div_ [ P.class_ "search" ]
+    , H.button_ [ P.class_ "search", P.id_ "search-button", E.onClick OpenPalette ]
         [ icon "search"
-        , H.input_
-            [ P.type_ "search"
-            , P.id_ "search"
-            , P.placeholder_ "Search modules and definitions"
-            , P.value_ (query m)
-            , E.onInput SetQuery
-            ]
+        , H.span_ [ P.class_ "search-label" ] [ text "Search modules and definitions" ]
         , H.kbd_ [] [ text "/" ]
         ]
     , H.button_ [ P.class_ "icon-button", E.onClick NextTheme, P.title_ (themeLabel (theme m)) ]
@@ -221,37 +248,86 @@ topBar ix m =
     themeIcon Dark = "moon"
     themeIcon Light = "sun"
 
--- | The modules, or with a query, what matches it.
+-- | The modules, and the index of every name.
 sidebar :: Index -> Model -> View context props Model Action
 sidebar ix m =
-  H.aside_ [ P.class_ "sidebar" ] $
-    if S.null q then
-      [ H.div_ [ P.class_ "sidebar-title" ] [ text "Modules" ]
-      , H.nav_ [] [ moduleLink (sumName s) | s <- ixModules ix ]
-      ]
-    else
-      [ H.div_ [ P.class_ "sidebar-title" ] [ text "Modules" ]
-      , H.nav_ [] (orNone [ moduleLink (sumName s) | s <- ixModules ix, matches (sumName s) ])
-      , H.div_ [ P.class_ "sidebar-title" ] [ text "Definitions" ]
-      , H.nav_ [] (orNone (take 80 [ declLink d | d <- sortOn rank defs ]))
-      ]
+  H.aside_ [ P.class_ "sidebar" ]
+    [ H.nav_ []
+        [ H.a_ [ P.classList_ [ ("nav-module", True), ("active", route m == IndexPage) ], P.href_ "#/:index" ]
+            [ icon "list", text " Index" ] ]
+    , H.div_ [ P.class_ "sidebar-title" ] [ text "Modules" ]
+    , H.nav_ [] [ moduleLink (sumName s) | s <- ixModules ix, not (sumHidden s) ]
+    ]
   where
-    q = S.toLower (S.strip (query m))
-    matches s = q `S.isInfixOf` S.toLower s
-    rank (Def n _ _ _) = (S.toLower n /= q, not (q `S.isPrefixOf` S.toLower n), S.length n)
-    defs = [ d | d@(Def n _ _ _) <- ixDefs ix, matches n ]
     current = fromMaybe "" (routeModule (route m))
     moduleLink mn =
       H.a_ [ P.classList_ [ ("nav-module", True), ("active", mn == current) ], P.href_ (moduleHref mn) ]
         (moduleName mn)
-    declLink (Def n k mn a) =
-      H.a_ [ P.class_ "nav-decl", P.href_ (declHref mn a) ]
-        [ H.span_ [ P.class_ ("kind kind-" <> k) ] [ text (kindLetter k) ]
-        , H.span_ [ P.class_ "nav-decl-name" ] [ text n ]
-        , H.span_ [ P.class_ "nav-decl-module" ] [ text mn ]
+
+-- | A result of a search: a module or a name.
+data Result = Result
+  { resName   :: MisoString
+  , resKind   :: MisoString
+  , resModule :: MisoString
+  , resHref   :: MisoString
+  }
+
+-- | What matches a query: the modules, then the names, the best first.
+results :: Index -> MisoString -> [Result]
+results ix query0
+  | S.null q = []
+  | otherwise =
+      take 6 [ Result mn "module" "" (moduleHref mn) | s <- ixModules ix, not (sumHidden s), let mn = sumName s, matches mn ]
+      ++ take 40 [ Result n k mn (declHref mn a) | Def n k mn a <- sortOn rank (filter (\(Def n _ _ _) -> matches n) (ixDefs ix)) ]
+  where
+    q = S.toLower (S.strip query0)
+    matches s = q `S.isInfixOf` S.toLower s
+    rank (Def n _ _ _) = (S.toLower n /= q, not (q `S.isPrefixOf` S.toLower n), S.length n, n)
+
+-- | The search palette: a box at the top of the page, with what matches
+-- as you type.  Up and down select, enter goes, escape closes.
+searchPalette :: Index -> Model -> View context props Model Action
+searchPalette ix m =
+  H.div_ [ P.class_ "palette-layer" ]
+    [ H.div_ [ P.class_ "palette-backdrop", E.onClick ClosePalette ] []
+    , H.div_ [ P.class_ "palette", textProp "role" "dialog" ]
+        [ H.div_ [ P.class_ "palette-input" ]
+            [ icon "search"
+            , H.input_
+                [ P.type_ "text", P.id_ "palette-input", P.placeholder_ "Search modules and definitions"
+                , P.value_ (query m), E.onInput SetQuery, E.onKeyDown PaletteKey
+                , textProp "autocomplete" "off", textProp "spellcheck" "false" ]
+            , H.kbd_ [ E.onClick ClosePalette ] [ text "esc" ]
+            ]
+        , H.div_ [ P.class_ "palette-results" ] $
+            case results ix (query m) of
+              [] | S.null (S.strip (query m)) -> [ H.div_ [ P.class_ "palette-hint" ] [ text "Type a module or a name: map, Html, onClick" ] ]
+                 | otherwise -> [ H.div_ [ P.class_ "palette-hint" ] [ text ("Nothing matches " <> query m) ] ]
+              rs -> zipWith row [0 ..] rs
+        , H.div_ [ P.class_ "palette-foot" ]
+            [ H.span_ [] [ H.kbd_ [] [ text "↑" ], H.kbd_ [] [ text "↓" ], text " select" ]
+            , H.span_ [] [ H.kbd_ [] [ text "↵" ], text " open" ]
+            , H.span_ [] [ H.kbd_ [] [ text "esc" ], text " close" ]
+            ]
         ]
-    orNone [] = [ H.div_ [ P.class_ "nav-empty" ] [ text "Nothing matches" ] ]
-    orNone xs = xs
+    ]
+  where
+    row i r =
+      H.a_ [ P.classList_ [ ("palette-row", True), ("selected", i == selected m) ]
+           , P.href_ (resHref r), E.onClick ClosePalette, onMouseEnter' i ]
+        [ H.span_ [ P.class_ ("kind kind-" <> resKind r) ] [ text (kindLetter (resKind r)) ]
+        , H.span_ [ P.class_ "palette-name" ] (marked (resName r))
+        , H.span_ [ P.class_ "palette-module" ] [ text (if S.null (resModule r) then "module" else resModule r) ]
+        ]
+    onMouseEnter' i = E.onMouseEnter (Select i)
+    -- the name, with what the query matches stressed
+    marked n =
+      let q = S.toLower (S.strip (query m))
+          (pre, rest) = S.breakOn q (S.toLower n)
+          a = S.length pre
+          b = S.length q
+      in if S.null rest || S.null q then [ text n ]
+         else [ text (S.take a n), H.mark_ [] [ text (S.take b (S.drop a n)) ], text (S.drop (a + b) n) ]
 
 -- | A module name with its last component stressed.
 moduleName :: MisoString -> [View context props model action]
@@ -273,12 +349,14 @@ kindLetter = \case
   "family" -> "T"
   "constructor" -> "c"
   "field" -> "·"
+  "module" -> "M"
   _ -> "·"
 
 page :: Index -> Model -> [View context props Model Action]
 page ix m =
   case route m of
     Home -> homePage ix
+    IndexPage -> indexPage ix
     ModulePage mn -> withModule mn modulePage
     SourcePage mn l e -> withModule mn (sourcePage l e)
   where
@@ -330,6 +408,38 @@ homePage ix =
   where
     stat n what = H.div_ [ P.class_ "stat" ] [ H.strong_ [] [ text (ms n) ], H.span_ [] [ text what ] ]
 
+-- | Every name, A to Z.
+indexPage :: Index -> [View context props Model Action]
+indexPage ix =
+  [ H.div_ [ P.class_ "module-header" ]
+      [ H.div_ [ P.class_ "eyebrow" ] [ text "Index" ]
+      , H.h1_ [ P.class_ "module-title" ] [ text "Every name" ]
+      , H.div_ [ P.class_ "letters" ] [ H.a_ [ P.href_ ("#/:index/" <> l) ] [ text l ] | (l, _) <- groups ]
+      ]
+  ] ++
+  [ H.section_ [ P.class_ "index-group", P.id_ ("/:index/" <> l) ]
+      [ H.h2_ [ P.class_ "index-letter" ] [ text l ]
+      , H.div_ [ P.class_ "index-names" ]
+          [ H.a_ [ P.class_ "index-name", P.href_ (declHref mn a) ]
+              [ H.span_ [ P.class_ ("kind kind-" <> k) ] [ text (kindLetter k) ]
+              , H.code_ [] [ text n ]
+              , H.span_ [ P.class_ "index-module" ] [ text mn ]
+              ]
+          | Def n k mn a <- ds ]
+      ]
+  | (l, ds) <- groups ]
+  where
+    groups = foldr add [] (sortOn (\(Def n _ _ _) -> (S.toLower n, n)) (ixDefs ix))
+    add d@(Def n _ _ _) acc =
+      let l = letter n
+      in case acc of
+           (l', ds) : rest | l' == l -> (l, d : ds) : rest
+           _ -> (l, [d]) : acc
+    letter n = case S.unpack (S.take 1 n) of
+      [c] | c >= 'a' && c <= 'z' -> S.toUpper (S.singleton c)
+          | c >= 'A' && c <= 'Z' -> S.singleton c
+      _ -> "Symbols"
+
 -- | Inlines up to the end of their first sentence.
 firstSentence :: [Inline] -> [Inline]
 firstSentence = \case
@@ -350,6 +460,8 @@ modulePage mo =
           , H.span_ [ P.class_ "muted" ] [ text (ms (length (modSource mo)) <> " lines") ]
           ]
       ]
+  , if null (modHeader mo) then text ""
+    else H.dl_ [ P.class_ "module-fields" ] (concat [ [ H.dt_ [] [ text k ], H.dd_ [] [ text v ] ] | (k, v) <- modHeader mo ])
   , H.div_ [ P.class_ "doc module-doc" ] (blocks (modName mo) (modDoc mo))
   ] ++ map (item mo) (modItems mo)
 
@@ -367,7 +479,7 @@ item mo = \case
 
 declaration :: Module -> Bool -> Declaration -> View context props Model Action
 declaration mo member d =
-  H.article_ [ P.classList_ [ ("decl", True), ("member", member), ("deprecated", not (S.null (declDeprecated d))) ]
+  H.article_ [ P.classList_ [ ("decl", True), ("member", member), ("deprecated", declWarning d == "deprecated") ]
              , P.id_ ("/" <> modName mo <> "/" <> declAnchor d) ]
     [ H.div_ [ P.class_ "decl-head" ]
         [ H.span_ [ P.class_ ("kind-badge kind-" <> declKind d) ] [ text (kindLabel (declKind d)) ]
@@ -375,14 +487,17 @@ declaration mo member d =
         , if declFrom d /= modName mo
             then H.span_ [ P.class_ "decl-from" ] [ text "from ", H.code_ [] [ text (declFrom d) ] ]
             else text ""
+        , if S.null (declFixity d) then text "" else H.span_ [ P.class_ "fixity", P.title_ "Fixity" ] [ text (declFixity d) ]
         , H.span_ [ P.class_ "spacer" ] []
         , if declLine d > 0
             then H.a_ [ P.class_ "source-link", P.href_ (sourceHref (declFrom d) (declLine d) (declEnd d)), P.title_ "Show in the module's source" ]
                    [ icon "code", text "Source" ]
             else text ""
         ]
-    , if S.null (declDeprecated d) then text ""
-      else H.div_ [ P.class_ "deprecation" ] [ icon "alert", H.strong_ [] [ text "Deprecated" ], text (if S.null (declDeprecated d) then "" else ": " <> declDeprecated d) ]
+    , if S.null (declWarning d) then text ""
+      else H.div_ [ P.class_ "deprecation" ]
+             [ icon "alert", H.strong_ [] [ text (if declWarning d == "warning" then "Warning" else "Deprecated") ]
+             , text (if S.null (declDeprecated d) then "" else ": " <> declDeprecated d) ]
     , H.pre_ [ P.class_ "signature" ] [ H.code_ [ prop "innerHTML" (declSig d) ] [] ]
     , if null (declArgs d) then text ""
       else H.div_ [ P.class_ "args" ]
@@ -396,6 +511,8 @@ declaration mo member d =
       else H.div_ [ P.class_ "subs" ]
              (H.div_ [ P.class_ "subs-title" ] [ text (if any ((== "constructor") . subKind) (declSubs d) then "Constructors" else "Fields") ]
               : map (sub mo) (declSubs d))
+    , if S.null (declMinimal d) then text ""
+      else H.div_ [ P.class_ "minimal" ] [ text "Minimal complete definition: ", H.code_ [] [ text (declMinimal d) ] ]
     , if null (declMembers d) then text ""
       else H.div_ [ P.class_ "members" ] (map (declaration mo True) (declMembers d))
     , if null (declInstances d) then text ""
@@ -432,7 +549,9 @@ instanceRow i =
         [ H.code_ [ prop "innerHTML" (instHead i) ] []
         , if instDerived i then H.span_ [ P.class_ "derived" ] [ text "derived" ] else text ""
         , H.span_ [ P.class_ "spacer" ] []
-        , H.a_ [ P.class_ "source-link", P.href_ (sourceHref (instModule i) (instLine i) (instEnd i)) ] [ icon "code", text "Source" ]
+        , if instLine i > 0
+            then H.a_ [ P.class_ "source-link", P.href_ (sourceHref (instModule i) (instLine i) (instEnd i)) ] [ icon "code", text "Source" ]
+            else H.span_ [ P.class_ "derived", P.title_ "Known from the type checker" ] [ text "type checker" ]
         ]
     , if null (instDoc i) then text "" else H.div_ [ P.class_ "doc" ] (blocks (instModule i) (instDoc i))
     ]
@@ -498,6 +617,9 @@ block mn = \case
       [ H.div_ [ P.class_ "example-input" ] [ H.span_ [ P.class_ "prompt" ] [ text ">>>" ], H.code_ [] [ text e ] ]
       , if null rs then text "" else H.pre_ [ P.class_ "example-output" ] [ text (S.intercalate "\n" rs) ]
       ]
+  QuickCheck e ->
+    H.div_ [ P.class_ "example" ]
+      [ H.div_ [ P.class_ "example-input" ] [ H.span_ [ P.class_ "prompt" ] [ text "prop>" ], H.code_ [] [ text e ] ] ]
   Bullets xs -> H.ul_ [] [ H.li_ [] (blocks mn x) | x <- xs ]
   Numbered xs -> H.ol_ [] [ H.li_ [] (blocks mn x) | x <- xs ]
   Definitions xs -> H.dl_ [] (concat [ [ H.dt_ [] (inlinesIn mn t), H.dd_ [] (blocks mn d) ] | (t, d) <- xs ])

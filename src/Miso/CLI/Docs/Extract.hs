@@ -37,6 +37,8 @@ data Module = Module
   , modDoc    :: [Block]
   , modItems  :: [Item]
   , modSource :: [String]   -- ^ highlighted HTML, a line each
+  , modHeader :: [(String, String)]  -- ^ the fields of the module header: Copyright, ...
+  , modHidden :: Bool       -- ^ OPTIONS_HADDOCK hide: not listed
   }
 
 data Item
@@ -59,6 +61,10 @@ data Declaration = Declaration
   , declEnd        :: Int
   , declFrom       :: String       -- ^ the module that defines it
   , declDeprecated :: String
+  , declWarning    :: String       -- ^ "deprecated" or "warning", with declDeprecated
+  , declFixity     :: String       -- ^ infixl 6, ...
+  , declMinimal    :: String       -- ^ a class's minimal complete definition
+  , declText       :: String       -- ^ the signature as plain text (for Hoogle)
   }
 
 -- | A constructor or a field.
@@ -69,6 +75,7 @@ data Sub = Sub
   , subSig    :: String
   , subDoc    :: [Block]
   , subFields :: [Sub]
+  , subText   :: String   -- ^ for Hoogle: C :: a -> T, f :: T -> a
   }
 
 -- | An argument (or the result) of a function with docs on its arguments.
@@ -93,12 +100,16 @@ data Source = Source
   , srcShown  :: String
   }
 
--- | What the type checker says: for each module, the values it exports,
--- with their types and the modules that define them.
-newtype Checked = Checked (M.Map String [(String, String, String)])
+-- | What the type checker says, for each module: the values it exports,
+-- with their types and the modules that define them, and the heads of the
+-- instances it defines.
+data Checked = Checked
+  { checkedValues    :: M.Map String [(String, String, String)]
+  , checkedInstances :: M.Map String [String]
+  }
 
 noChecked :: Checked
-noChecked = Checked M.empty
+noChecked = Checked M.empty M.empty
 
 -----------------------------------------------------------------------------
 -- What a module says, before names are resolved
@@ -116,6 +127,7 @@ data Raw = Raw
   , rEnd     :: Int
   , rHead    :: String       -- ^ for a type: its name and variables (T a b)
   , rDerived :: [String]     -- ^ the classes of its deriving clauses
+  , rMinimal :: String
   }
 
 data RawSub = RawSub
@@ -140,6 +152,7 @@ data Space = Types | Values
 
 data Export
   = ExName Space String
+  | ExBundled [String]      -- ^ the names in T(.., P): pattern synonyms, if they are
   | ExModule String
   | ExHeading Int String
   | ExDoc [String]
@@ -152,7 +165,9 @@ data Parsed = Parsed
   , pBody       :: [Either (Int, String) Raw]
   , pChunks     :: M.Map String [String]
   , pInstances  :: [RawInst]
-  , pDeprecated :: M.Map String String
+  , pDeprecated :: M.Map String (String, String)  -- ^ kind (deprecated, warning) and message
+  , pFixity     :: M.Map String String
+  , pOptions    :: [String]          -- ^ of OPTIONS_HADDOCK: hide, prune, ignore-exports, not-home
   , pToks       :: M.Map Int [Tok]   -- ^ the tokens, by the line they start on
   , pShown      :: [Tok]
   }
@@ -166,8 +181,12 @@ parseModule src =
       shown | srcShown src == srcText src = toks
             | length (lines (srcShown src)) == length (lines (srcText src)) = lexHaskell (srcShown src)
             | otherwise = toks
-  in Parsed (if null name then srcModule src else name) doc exps (tlItems tl) (tlChunks tl) (tlInstances tl)
-            (tlDeprecated tl) (M.fromListWith (flip (++)) [ (tLine t, [t]) | t <- toks ]) shown
+      options = concat [ words (map (\c -> if c == ',' then ' ' else c) (drop (length "OPTIONS_HADDOCK") (dropWhile isSpace (drop 3 (tText t)))))
+                       | t <- takeWhile (\t -> not (tKind t == Keyword && tText t == "module")) sig
+                       , tKind t == Pragma, "OPTIONS_HADDOCK" `isPrefixOf` dropWhile isSpace (drop 3 (tText t)) ]
+  in Parsed (if null name then srcModule src else name) doc (if "ignore-exports" `elem` options then Nothing else exps)
+            (tlItems tl) (tlChunks tl) (tlInstances tl) (tlDeprecated tl) (tlFixity tl) options
+            (M.fromListWith (flip (++)) [ (tLine t, [t]) | t <- toks ]) shown
   where
     header ts =
       let (before, rest) = break (\t -> tKind t == Keyword && tText t == "module" && tCol t == 1) ts
@@ -259,6 +278,8 @@ exports = go
         k : n : _ | tText k == "pattern" -> [ExName Values (unparen [n])]
         k : rest | tText k == "type" -> [ExName Types (unparen rest)]
         p : o : _ | tText p == "(" -> [ExName (if take 1 (tText o) == ":" then Types else Values) (tText o)]
+        n : p : rest | tKind n == Con && tText p == "(" ->
+          ExName Types (unqual (tText n)) : [ ExBundled [ tText c | c <- rest, tKind c == Con ] ]
         n : _ | tKind n == Con -> [ExName Types (unqual (tText n))]
         n : _ | tKind n == Var -> [ExName Values (unqual (tText n))]
         _ -> []
@@ -293,13 +314,14 @@ data TopLevel = TopLevel
   { tlItems      :: [Either (Int, String) Raw]
   , tlChunks     :: M.Map String [String]
   , tlInstances  :: [RawInst]
-  , tlDeprecated :: M.Map String String
+  , tlDeprecated :: M.Map String (String, String)
+  , tlFixity     :: M.Map String String
   }
 
 -- | The declarations, section headings, named chunks, instances and
 -- deprecations of groups.
 topLevel :: [[Tok]] -> TopLevel
-topLevel = go [] (TopLevel [] M.empty [] M.empty)
+topLevel = go [] (TopLevel [] M.empty [] M.empty M.empty)
   where
     done tl = tl { tlItems = reverse (tlItems tl), tlInstances = reverse (tlInstances tl) }
     go _ tl [] = done tl
@@ -318,15 +340,27 @@ topLevel = go [] (TopLevel [] M.empty [] M.empty)
               | otherwise -> go [] tl gs
         t : _ | tKind t == Pragma ->
           go doc tl { tlDeprecated = foldr (uncurry M.insert) (tlDeprecated tl) (deprecations (tText t)) } gs
+        t : rest | tText t `elem` ["infix", "infixl", "infixr"] ->
+          let cs = code rest
+              (prec, ops) = case cs of
+                n : more | tKind n == Number -> (tText n, more)
+                _ -> ("9", cs)
+              names = [ tText o | o <- ops, tKind o `elem` [Op, Var, Con], tText o /= "," ]
+          in go doc tl { tlFixity = foldr (\n m -> M.insert n (tText t ++ " " ++ prec) m) (tlFixity tl) names } gs
+        -- data, newtype and type family instances: instances of their family
+        t : rest | tText t `elem` ["data", "newtype", "type"], take 1 (map tText (code rest)) == ["instance"] ->
+          let headToks = takeWhile (\x -> tText x `notElem` ["=", "where"]) (drop 1 (code rest))
+          in case instanceOf headToks of
+               Just (fam, tys) ->
+                 go [] tl { tlInstances = RawInst headToks (if null doc then [] else commentLines (map tText doc)) (tLine t) (endLine g) fam tys : tlInstances tl } gs
+               Nothing -> go [] tl gs
         t : rest | tText t == "instance" || (tText t == "deriving" && take 1 (map tText (code rest)) == ["instance"]) ->
           let headToks = takeWhile (\x -> tText x /= "where") (dropWhile (\x -> tText x `elem` ["deriving", "instance"]) (code g))
           in case instanceOf headToks of
                Just (cls, tys) ->
                  go [] tl { tlInstances = RawInst headToks (if null doc then [] else commentLines (map tText doc)) (tLine t) (endLine g) cls tys : tlInstances tl } gs
                Nothing -> go [] tl gs
-        _ -> case declare (map tText doc) g of
-               Just r -> go [] tl { tlItems = Right r : tlItems tl } gs
-               Nothing -> go [] tl gs
+        _ -> go [] tl { tlItems = reverse (map Right (declare (map tText doc) g)) ++ tlItems tl } gs
     commentsAfter l (g : gs) | [c] <- g, tKind c == Comment, "--" `isPrefixOf` tText c, tLine c == l + 1, not (isSection (tText c)) =
       let (more, rest) = commentsAfter (tLine c) gs in (c : more, rest)
     commentsAfter _ gs = ([], gs)
@@ -345,7 +379,7 @@ instanceOf ts =
        _ -> Nothing
 
 -- | The names and messages of a {-# DEPRECATED names "message" #-} pragma.
-deprecations :: String -> [(String, String)]
+deprecations :: String -> [(String, (String, String))]
 deprecations p =
   let body0 = dropWhile isSpace (drop 3 p)
   in case words body0 of
@@ -353,67 +387,69 @@ deprecations p =
          let body = drop (length w) body0
              (names, msg) = break (== '"') body
              message = takeWhile (/= '"') (drop 1 msg)
-         in [ (n, message) | n <- words (map (\c -> if c == ',' then ' ' else c) names), not (null n) ]
+             kind = if w == "WARNING" then "warning" else "deprecated"
+         in [ (n, (kind, message)) | n <- words (map (\c -> if c == ',' then ' ' else c) names), not (null n) ]
        _ -> []
 
 -- | A declaration of a group, with the doc comment before it.
-declare :: [String] -> [Tok] -> Maybe Raw
+declare :: [String] -> [Tok] -> [Raw]
 declare doc g =
   case cs of
-    [] -> Nothing
+    [] -> []
     t : rest ->
       case tText t of
-        w | w `elem` ["import", "infix", "infixl", "infixr", "default"] -> Nothing
+        w | w `elem` ["import", "infix", "infixl", "infixr", "default", "instance", "deriving"] -> []
         "data" | next "family" rest -> typeDecl "family" (drop 1 rest)
-               | next "instance" rest -> Nothing
+               | next "instance" rest -> []
                | otherwise -> typeDecl "data" rest
-        "newtype" | next "instance" rest -> Nothing
+        "newtype" | next "instance" rest -> []
                   | otherwise -> typeDecl "newtype" rest
         "type" | next "family" rest -> typeDecl "family" (drop 1 rest)
-               | next "instance" rest -> Nothing
+               | next "instance" rest -> []
                | otherwise -> typeDecl "type" rest
         "class" -> classDecl rest
-        "pattern" -> case rest of
-          n : _ -> Just (raw (tText n) Values "pattern" g) { rArgs = argDocs g }
-          [] -> Nothing
-        "foreign" -> case [ v | (v, c) <- zip cs (drop 1 cs), tKind v == Var, tText c == "::" ] of
-          v : _ -> Just (raw (tText v) Values "foreign" g) { rArgs = argDocs g }
-          [] -> Nothing
-        _ | Just names <- sigNames cs -> case names of
-              n : more -> Just (raw n Values "function" g) { rArgs = argDocs g, rSubs = [ RawSub m "alias" [] [] [] | m <- more ] }
-              [] -> Nothing
-          | Just n <- equationName cs -> Just (raw n Values "equation" g)
-          | otherwise -> Nothing
+        "pattern" | Just names <- sigNames rest -> [ (raw n Values "pattern" g) { rArgs = argDocs g } | n <- conNames rest ++ names ]
+                  | otherwise -> case rest of
+                      n : _ -> [ raw (tText n) Values "pattern" g ]
+                      [] -> []
+        "foreign" -> case [ v | (v, c) <- zip cs (drop 1 cs), tKind v `elem` [Var, Op], tText c == "::" ] of
+          v : _ -> [ (raw (tText v) Values "foreign" g) { rArgs = argDocs g } ]
+          [] -> []
+        _ | Just names <- sigNames cs -> [ (raw n Values "function" g) { rArgs = argDocs g } | n <- names ]
+          | Just n <- equationName cs -> [ raw n Values "equation" g ]
+          | otherwise -> []
   where
     cs = code g
     next k (x : _) = tText x == k
     next _ [] = False
-    raw n sp k sig = Raw n sp k sig (if null doc then [] else commentLines doc) [] [] [] (tLine (head g)) (endLine g) "" []
+    raw n sp k sig = Raw n sp k sig (if null doc then [] else commentLines doc) [] [] [] (tLine (head g)) (endLine g) "" [] ""
 
     typeDecl k ts =
       case nameAfterContext ts of
         Just n ->
           let r = raw n Types k g
-          in Just r { rSubs = if k `elem` ["data", "newtype"] then constructors g else []
-                    , rHead = typeHead n ts
-                    , rDerived = if k `elem` ["data", "newtype"] then derivings g else [] }
-        Nothing -> Nothing
+          in [ r { rSubs = if k `elem` ["data", "newtype"] then constructors g else []
+                 , rHead = typeHead n ts
+                 , rDerived = if k `elem` ["data", "newtype"] then derivings g else [] } ]
+        Nothing -> []
 
     classDecl ts =
       case nameAfterContext ts of
         Just n ->
           let (headToks, body) = break (\x -> tKind x == Keyword && tText x == "where") g
               members = case drop 1 body of
-                b : _ -> mapMaybe member (topLevelMembers (segment (tCol b) (drop 1 body)))
+                b : _ -> concatMap member (topLevelMembers (segment (tCol b) (drop 1 body)))
                 [] -> []
-          in Just (raw n Types "class" headToks) { rMembers = members }
-        Nothing -> Nothing
+              minimal = concat [ trimS (takeWhile (/= '#') (drop (length "MINIMAL") (dropWhile isSpace (drop 3 (tText p)))))
+                               | p <- body, tKind p == Pragma, "MINIMAL" `isPrefixOf` dropWhile isSpace (drop 3 (tText p)) ]
+          in [ (raw n Types "class" headToks) { rMembers = members, rMinimal = minimal, rHead = typeHead n ts } ]
+        Nothing -> []
 
     member (d, mg) =
-      case declare d mg of
-        Just r | rKind r == "function" -> Just r { rKind = "method" }
-        Just r | rKind r `elem` ["type", "data", "family"] -> Just r
-        _ -> Nothing
+      [ if rKind r == "function" then r { rKind = "method" } else r
+      | r <- declare d mg, rKind r `elem` ["function", "type", "data", "family"] ]
+    -- pattern P, Q :: T
+    conNames ts = [ tText c | c <- takeWhile ((/= "::") . tText) ts, tKind c == Con ]
 
 -- | A type's name with its variables: T a b.
 typeHead :: String -> [Tok] -> String
@@ -602,50 +638,85 @@ constructors g =
 -- The package
 
 extractPackage :: String -> String -> String -> Checked -> [Source] -> Package
-extractPackage name version synopsis (Checked checked) srcs =
+extractPackage name version synopsis checked srcs =
   Package name version synopsis' (map finish parsed)
   where
+    values = checkedValues checked
     parsed = map parseModule srcs
-    names = map pName parsed
     synopsis' = if null synopsis then fromMaybe "" (listToMaybe (mapMaybe description parsed)) else synopsis
 
     declsByModule = M.fromList [ (pName p, dedup [ r | Right r <- pBody p ]) | p <- parsed ]
     declsOf p = M.findWithDefault [] (pName p) declsByModule
     parsedByName = M.fromList [ (pName p, p) | p <- parsed ]
 
-    -- where names are: the modules that define them, and their anchors
-    defined :: M.Map (Space, String) [(String, String)]
-    defined = M.fromListWith (flip (++))
-      ([ ((rSpace r, rName r), [(pName p, anchor (rSpace r) (rName r))]) | p <- parsed, r <- declsOf p ]
-       ++ [ ((sp, sName s), [(pName p, anchor Values (sName s))]) | p <- parsed, r <- declsOf p, s <- allSubs r, sp <- [Values, Types] ]
-       ++ [ ((rSpace m, rName m), [(pName p, anchor (rSpace m) (rName m))]) | p <- parsed, r <- declsOf p, m <- rMembers r ])
-    allSubs r = concat [ s : sFields s | s <- rSubs r, sKind s /= "alias" ]
+    hidden p = "hide" `elem` pOptions p
+    visible = [ pName p | p <- parsed, not (hidden p) ]
+    notHome = [ pName p | p <- parsed, "not-home" `elem` pOptions p ]
 
-    -- the instances of the package (and the derived ones), by the names of
-    -- their classes and types, each drawn once
+    -- where names are defined: the module, the anchor, and the lines
+    defined :: M.Map (Space, String) [(String, String, Int, Int)]
+    defined = M.fromListWith (flip (++))
+      ([ ((rSpace r, rName r), [(pName p, anchor (rSpace r) (rName r), rLine r, rEnd r)]) | p <- parsed, r <- declsOf p ]
+       ++ [ ((sp, sName s), [(pName p, anchor Values (sName s), rLine r, rEnd r)]) | p <- parsed, r <- declsOf p, s <- allSubs r, sp <- [Values, Types] ]
+       ++ [ ((rSpace m, rName m), [(pName p, anchor (rSpace m) (rName m), rLine m, rEnd m)]) | p <- parsed, r <- declsOf p, m <- rMembers r ])
+    allSubs r = concat [ s : sFields s | s <- rSubs r ]
+
+    -- the visible modules that export a name (by name, or with module M of
+    -- the module that defines it): where it can be linked to
+    exporters :: M.Map (Space, String) [String]
+    exporters = M.fromListWith (flip (++))
+      [ (k, [pName p]) | p <- parsed, not (hidden p), Just es <- [pExports p], e <- es, k <- keys es e ]
+      where
+        keys _ (ExName sp n) = [(sp, n)]
+        keys _ (ExModule m) = [ (rSpace r, rName r) | r <- M.findWithDefault [] m declsByModule ]
+        keys _ _ = []
+    -- the module whose page shows a name defined in a module
+    home :: (Space, String) -> String -> Maybe String
+    home k from =
+      let ex = M.findWithDefault [] k exporters
+          ok m = m `elem` visible && m `notElem` notHome
+      in listToMaybe ([ from | ok from ] ++ filter ok ex ++ [ m | m <- ex, m `elem` visible ] ++ [ from | from `elem` visible ])
+
+    -- the instances of the package (with the derived ones, and those only
+    -- the type checker knows of), by the names of their classes and types
     instancesByName :: M.Map String [Instance]
     instancesByName = M.fromListWith (flip (++)) $
       [ (n, [inst]) | p <- parsed, i <- pInstances p
-                    , let inst = Instance (highlightToks (lexHaskell (oneLine (render (within p (iHead i))))))
+                    , let inst = Instance (highlightLinked (const False) (typeLink (pName p)) (lexHaskell (oneLine (render (within p (iHead i))))))
                                           (parseDoc (resolver (pName p)) (iDoc i)) (pName p) (iLine i) (iEnd i) False
                     , n <- nub (iClass i : iTypes i) ]
       ++ [ (n, [inst]) | p <- parsed, d <- declsOf p, c <- rDerived d
-                       , let inst = Instance (highlightToks (lexHaskell (c ++ " " ++ paren (rHead d)))) [] (pName p) (rLine d) (rEnd d) True
+                       , let inst = Instance (highlightLinked (const False) (typeLink (pName p)) (lexHaskell (c ++ " " ++ paren (rHead d)))) [] (pName p) (rLine d) (rEnd d) True
                        , n <- nub [rName d, c] ]
+      ++ [ (n, [inst]) | p <- parsed, h <- M.findWithDefault [] (pName p) (checkedInstances checked)
+                       , Just (c, tys) <- [instanceOf (code (lexHaskell h))]
+                       , not (known p c tys)
+                       , let inst = Instance (highlightLinked (const False) (typeLink (pName p)) (lexHaskell h)) [] (pName p) 0 0 False
+                       , n <- nub (c : tys) ]
+    -- an instance the source has (declared or derived)
+    known p c tys =
+      or [ iClass i == c && iTypes i == tys | i <- pInstances p ]
+      || or [ c `elem` rDerived d && take 1 tys == [rName d] | d <- declsOf p ]
+
     -- the declarations of the package, each made once (re-exports share them)
     declarations :: M.Map (String, Space, String) Declaration
     declarations = M.fromList
-      [ ((pName p, rSpace r, rName r), declaration p (resolver (pName p)) (pName p) r) | p <- parsed, r <- declsOf p ]
-    declarationOf p r = M.findWithDefault (declaration p (resolver (pName p)) (pName p) r) (pName p, rSpace r, rName r) declarations
+      [ ((pName p, rSpace r, rName r), declaration p (pName p) r) | p <- parsed, r <- declsOf p ]
+    declarationOf p r = M.findWithDefault (declaration p (pName p) r) (pName p, rSpace r, rName r) declarations
 
     finish p =
       let res = resolver (pName p)
-          items = case pExports p of
-            Just es -> concatMap (exportItem [pName p] p res) es
-            Nothing -> concatMap (bodyItem p res) (pBody p)
-      in Module (pName p) (parseDoc res (moduleDoc (pDoc p))) items (highlightLines (pShown p))
+          items0 = case pExports p of
+            Just es -> concatMap (exportItem [pName p] p) es
+            Nothing -> concatMap (bodyItem p) (pBody p)
+          items = if "prune" `elem` pOptions p then filter documented items0 else items0
+      in Module (pName p) (parseDoc res (moduleDoc (pDoc p))) items
+                (highlightLinesLinked (sourceLink (pName p)) (pShown p)) (moduleHeader (pDoc p)) (hidden p)
+    documented it = case it of
+      Decl d -> not (null (declDoc d)) || any (not . null . subDoc) (declSubs d) || not (null (declArgs d))
+      _ -> True
 
-    bodyItem p res e =
+    bodyItem p e =
       case e of
         Left (n, h) -> [Heading n h]
         Right r | isFirst p r -> [Decl (declarationOf p r)]
@@ -654,69 +725,93 @@ extractPackage name version synopsis (Checked checked) srcs =
       x : _ -> rLine x == rLine r
       [] -> False
 
-    exportItem seen p res e =
+    exportItem seen p e =
       case e of
         ExHeading n h -> [Heading n h]
-        ExDoc ls -> [Prose (parseDoc res ls)]
-        ExChunk c -> maybe [] (\ls -> [Prose (parseDoc res ls)]) (M.lookup c (pChunks p))
+        ExDoc ls -> [Prose (parseDoc (resolver (pName p)) ls)]
+        ExChunk c -> maybe [] (\ls -> [Prose (parseDoc (resolver (pName p)) ls)]) (M.lookup c (pChunks p))
         ExModule m
           | m == pName p || m `elem` seen -> []
           | Just q <- M.lookup m parsedByName ->
               -- a module of the package: its exports, here
-              let its = maybe (concatMap (bodyItem q (resolver m)) (pBody q)) (concatMap (exportItem (m : seen) q (resolver m))) (pExports q)
+              let its = maybe (concatMap (bodyItem q) (pBody q)) (concatMap (exportItem (m : seen) q)) (pExports q)
               in ReExport m True : [ it | it@(Decl _) <- its ]
           | otherwise ->
-              case [ external n t from | (n, t, from) <- M.findWithDefault [] (pName p) checked, from == m ] of
+              case [ external n t from | (n, t, from) <- M.findWithDefault [] (pName p) values, from == m ] of
                 [] -> [ReExport m False]
-                ds -> ReExport m True : map Decl ds
+                ds -> ReExport m False : map Decl ds
+        ExBundled ns ->
+          [ Decl (declarationOf (parsedByName M.! from) r) | n <- ns, Just (from, r) <- [findDecl (pName p) Values n], rKind r == "pattern" ]
         ExName sp n ->
           case findDecl (pName p) sp n of
             Just (from, r) -> [Decl (declarationOf (parsedByName M.! from) r)]
             Nothing ->
-              case [ external n' t from | (n', t, from) <- M.findWithDefault [] (pName p) checked, n' == n, sp == Values ] of
+              case [ external n' t from | (n', t, from) <- M.findWithDefault [] (pName p) values, n' == n, sp == Values ] of
                 d : _ -> [Decl d]
                 [] -> [Decl (blankDecl n (anchor sp n) "reexport" (escapeHtml n) (pName p))]
 
     -- a value from outside the package, with the type the type checker says
-    external n t from = blankDecl n (anchor Values n) "reexport" (highlightSig n (operatorName n ++ " :: " ++ t)) from
+    external n t from =
+      (blankDecl n (anchor Values n) "reexport" (highlightLinked (const False) (typeLink from) (lexHaskell (operatorName n ++ " :: " ++ t))) from)
+        { declText = operatorName n ++ " :: " ++ t }
 
-    blankDecl n a k s from = Declaration n a k s [] [] [] [] [] 0 0 from ""
+    blankDecl n a k s from = Declaration n a k s [] [] [] [] [] 0 0 from "" "" "" "" n
 
     -- a name of a module: its own, or one it re-exports from the package
     findDecl mn sp n =
       let own = [ r | r <- M.findWithDefault [] mn declsByModule, rName r == n, rSpace r == sp ]
           ownMember = [ m | r <- M.findWithDefault [] mn declsByModule, m <- rMembers r, rName m == n, rSpace m == sp ]
-          froms = nub [ from | (from, _) <- M.findWithDefault [] (sp, n) defined ]
+          froms = nub [ from | (from, _, _, _) <- M.findWithDefault [] (sp, n) defined ]
           elsewhere = [ (from, r) | from <- froms, r <- M.findWithDefault [] from declsByModule, rName r == n, rSpace r == sp ]
           elsewhereMember = [ (from, m) | from <- froms, r <- M.findWithDefault [] from declsByModule, m <- rMembers r, rName m == n ]
       in case own ++ ownMember of
            r : _ -> Just (mn, r)
            [] -> listToMaybe (elsewhere ++ elsewhereMember)
 
-    declaration p res mn r =
-      Declaration
+    declaration p mn r =
+      let res = resolver mn
+          (sigHtml, sigText) = signature p mn r
+          (warnKind, warnMsg) = M.findWithDefault ("", "") (rName r) (pDeprecated p)
+      in Declaration
         { declName = rName r
         , declAnchor = anchor (rSpace r) (rName r)
         , declKind = if rKind r == "equation" then "function" else rKind r
-        , declSig = signature p mn r
+        , declSig = sigHtml
         , declDoc = parseDoc res (rDoc r)
-        , declMembers = map (declaration p res mn) (rMembers r)
-        , declSubs = [ sub p res s | s <- rSubs r, sKind s /= "alias" ]
-        , declArgs = [ Arg (highlightToks (lexHaskell (oneLine (render (within p ts))))) (parseDoc res d) | (ts, d) <- rArgs r ]
+        , declMembers = map (declaration p mn) (rMembers r)
+        , declSubs = [ sub p mn r s | s <- rSubs r ]
+        , declArgs = [ Arg (highlightLinked (const False) (typeLink mn) (lexHaskell (oneLine (render (within p ts))))) (parseDoc res d) | (ts, d) <- rArgs r ]
         , declInstances = instancesOf r
         , declLine = rLine r
         , declEnd = rEnd r
         , declFrom = mn
-        , declDeprecated = M.findWithDefault "" (rName r) (pDeprecated p)
+        , declDeprecated = warnMsg
+        , declWarning = warnKind
+        , declFixity = M.findWithDefault "" (rName r) (pFixity p)
+        , declMinimal = rMinimal r
+        , declText = sigText
         }
 
-    sub p res s =
-      Sub (sName s) (anchor Values (sName s)) (sKind s) (subSignature p s) (parseDoc res (sDoc s)) (map (sub p res) (sFields s))
-    subSignature p s =
+    sub p mn r s =
       let txt = oneLine (render (within p (sSig s)))
-      in case sKind s of
-           "field" -> highlightToks (lexHaskell txt)
-           _ -> highlightSig (sName s) txt
+          html = case sKind s of
+            "field" -> highlightLinked (const False) (typeLink mn) (lexHaskell txt)
+            _ -> highlightLinked (\t -> tText t == sName s && tLine t == 1 && tCol t == 1) (typeLink mn) (lexHaskell txt)
+          hoogle = case sKind s of
+            "field" -> sName s ++ " :: " ++ rHead r ++ " -> " ++ dropWhile (`elem` "!~") txt
+            _ | "::" `elem` words txt -> txt
+              | otherwise -> sName s ++ " :: " ++ concatMap (++ " -> ") (argsOf (dropWhile ((== Space) . tKind) (drop 1 (lexHaskell txt)))) ++ rHead r
+      in Sub (sName s) (anchor Values (sName s)) (sKind s) html (parseDoc (resolver mn) (sDoc s)) (map (sub p mn r) (sFields s)) hoogle
+    -- the arguments of a constructor: the parts of its type split at the
+    -- white space at depth 0 (without strictness marks)
+    argsOf ts = filter (not . null) (map (dropWhile (`elem` "!~") . concatMap tText) (go (0 :: Int) [] ts))
+      where
+        go _ acc [] = [reverse acc]
+        go d acc (t : rest)
+          | tText t `elem` ["(", "["] = go (d + 1) (t : acc) rest
+          | tText t `elem` [")", "]"] = go (d - 1) (t : acc) rest
+          | d == 0 && tKind t == Space = reverse acc : go d [] rest
+          | otherwise = go d (t : acc) rest
 
     instancesOf r =
       case rSpace r of
@@ -724,14 +819,35 @@ extractPackage name version synopsis (Checked checked) srcs =
         _ -> []
     paren h = if ' ' `elem` h then "(" ++ h ++ ")" else h
 
-    -- the signature without its comments, with its name stressed; for a
-    -- function without one, the type the type checker says
+    -- the signature without its comments, with its name stressed and its
+    -- types linked; for a function without one, the type the type checker
+    -- says.  And as plain text, on one line.
     signature p mn r
       | rKind r == "equation" =
-          case [ t | (n, t, _) <- M.findWithDefault [] mn checked, n == rName r ] of
-            t : _ -> highlightSig (rName r) (operatorName (rName r) ++ " :: " ++ t)
-            [] -> highlightSig (rName r) (operatorName (rName r))
-      | otherwise = highlightSig (rName r) (render (within p (rSig r)))
+          let txt = case [ t | (n, t, _) <- M.findWithDefault [] mn values, n == rName r ] of
+                t : _ -> operatorName (rName r) ++ " :: " ++ t
+                [] -> operatorName (rName r)
+          in (highlightSig mn (rName r) txt, txt)
+      | rKind r `elem` ["data", "newtype", "type", "family", "class"] =
+          let txt = render (within p (rSig r))
+              plain = (if rKind r == "family" then "type family" else rKind r) ++ " " ++ rHead r
+          in (highlightSig mn (rName r) txt, plain)
+      | otherwise =
+          let txt = render (within p (rSig r))
+              -- one name for Hoogle (a, b :: t is a :: t and b :: t)
+              plain = case breakOnSig (oneLine txt) of
+                Just t -> (if rKind r == "pattern" then "pattern " else "") ++ operatorName (rName r) ++ " :: " ++ t
+                Nothing -> oneLine txt
+          in (highlightSig mn (rName r) txt, plain)
+    breakOnSig x = case x of
+      ':' : ':' : ' ' : t -> Just t
+      _ : rest -> breakOnSig rest
+      [] -> Nothing
+
+    highlightSig mn n s =
+      let ts = lexHaskell s
+          first = listToMaybe [ (tLine t, tCol t) | t <- ts, tText t == n, tKind t `elem` [Var, Con, Op] ]
+      in highlightLinked (\t -> Just (tLine t, tCol t) == first) (typeLink mn) ts
 
     -- the tokens (with white space) from the first of some to the last
     within p sig =
@@ -742,17 +858,38 @@ extractPackage name version synopsis (Checked checked) srcs =
                  b = pos (last sig)
              in [ t | l <- [fst a .. fst b], t <- M.findWithDefault [] l (pToks p), pos t >= a, pos t <= b ]
 
-    resolver mn = Resolve (refUrl mn) (`elem` names)
+    -- links: to the docs of a name (on the page of its home module), from a
+    -- type in a signature, and to the source of a name, from the source
+    resolver mn = Resolve (refUrl mn) (`elem` visible)
     refUrl mn n =
       let (q, base) = splitQual n
-          candidates sp = [ (from, a) | (from, a) <- M.findWithDefault [] (sp, base) defined, null q || from == q ]
+          candidates sp = [ (sp, from, a) | (from, a, _, _) <- M.findWithDefault [] (sp, base) defined, null q || from == q ]
           pick = [ x | sp <- if isUpperName base then [Types, Values] else [Values, Types], x <- candidates sp ]
-          prefer = [ x | x@(from, _) <- pick, from == mn ] ++ pick
-      in case prefer of
-           (from, a) : _ -> "#/" ++ from ++ "/" ++ a
+          prefer = [ x | x@(_, from, _) <- pick, from == mn ] ++ pick
+      in case [ "#/" ++ h ++ "/" ++ a | (sp, from, a) <- prefer, Just h <- [home (sp, base) from] ] of
+           u : _ -> u
            [] -> ""
+    typeLink mn t
+      | tKind t == Con = refUrl mn (tText t)
+      | otherwise = ""
+    sourceLink mn t
+      | tKind t `elem` [Con, Var] =
+          let (q, base) = splitQual (tText t)
+              sps = if tKind t == Con then [Types, Values] else [Values]
+              cands = [ x | sp <- sps, x@(from, _, _, _) <- M.findWithDefault [] (sp, base) defined, null q || from == q ]
+              prefer = [ x | x@(from, _, _, _) <- cands, from == mn ] ++ cands
+          in case prefer of
+               (from, _, l, e) : _ | l > 0 -> "#/" ++ from ++ "/src/" ++ show l ++ (if e > l then "-" ++ show e else "")
+               _ -> ""
+      | otherwise = ""
 
     description p = listToMaybe [ trimS (drop 1 (dropWhile (/= ':') l)) | l <- commentLines (pDoc p), "Description" `isPrefixOf` dropWhile isSpace l ]
+
+-- | The fields of a module header: Copyright, License, Maintainer, ...
+moduleHeader :: [String] -> [(String, String)]
+moduleHeader ds =
+  [ (trimS k, trimS (drop 1 v)) | l <- commentLines ds, (k, v@(':' : _)) <- [break (== ':') l]
+  , trimS k `elem` ["Copyright", "License", "Maintainer", "Stability", "Portability", "Safe Haskell", "Language"] ]
 
 -- | An operator in parentheses, a name as it is.
 operatorName :: String -> String
@@ -760,13 +897,6 @@ operatorName n = if not (null n) && not (isAlphaNum (head n)) && head n /= '_' t
 
 highlightToks :: [Tok] -> String
 highlightToks = highlight (const False)
-
--- | A signature, with the first occurrence of its name stressed.
-highlightSig :: String -> String -> String
-highlightSig n s =
-  let ts = lexHaskell s
-      first = listToMaybe [ (tLine t, tCol t) | t <- ts, tText t == n, tKind t `elem` [Var, Con, Op] ]
-  in highlight (\t -> Just (tLine t, tCol t) == first) ts
 
 -- | Text on one line: its lines joined, with single spaces.
 oneLine :: String -> String
