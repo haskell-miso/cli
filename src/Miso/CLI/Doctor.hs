@@ -67,7 +67,7 @@ doctor = do
     case r of
       Left e -> bad "miso.yml" e
       Right cfg -> do
-        ok ("miso.yml (" ++ cfgName cfg ++ ")")
+        ok ("miso.yml (" ++ cfgName cfg ++ " " ++ cfgVersion cfg ++ ")")
         dirs <- mapM doesDirectoryExist (cfgSourceDirs cfg)
         check (and dirs) ("source dirs: " ++ unwords (cfgSourceDirs cfg)) "a source dir of miso.yml does not exist"
         let browser = maybe False (`elem` ["browser", "browser_js"]) (cfgTarget cfg)

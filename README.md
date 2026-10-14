@@ -45,6 +45,7 @@ keeps the last one.
 
 ```yaml
 name: counter
+version: 0.1.0             # required: numbers separated by dots
 main: Main                 # the main module (default Main)
 source-dirs: [app]         # default [app]
 target: browser            # browser (WebAssembly, needs emcc), browser_js, or native
