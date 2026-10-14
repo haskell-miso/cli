@@ -22,12 +22,14 @@ foreign import ccall "serve.h miso_mtime" c_mtime :: CString -> IO CLong
 foreign import ccall "serve.h miso_spawn" c_spawn :: CString -> IO CLong
 foreign import ccall "serve.h miso_child_done" c_childDone :: CLong -> IO CInt
 foreign import ccall "serve.h miso_now_ms" c_nowMs :: IO CLong
+foreign import ccall "serve.h miso_quit_on_ctrl_c" c_quitOnCtrlC :: IO ()
 foreign import ccall "serve.h miso_term_cols" c_termCols :: IO CInt
 
 -- | Serve dir on the port, or, when none was asked for, on the first free
 -- one from 8000.
 start :: FilePath -> Maybe Int -> Bool -> IO ()
 start dir mport devMode = do
+  c_quitOnCtrlC
   let try p = withCAString dir $ \d -> c_start d (fromIntegral p) (if devMode then 1 else 0)
       firstFree [] = failWith "no free port in 8000-8099; pick one with --port"
       firstFree (p : ps) = do
