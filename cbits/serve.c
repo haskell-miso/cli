@@ -242,6 +242,7 @@ long miso_mtime(const char *path) {
 #ifndef _WIN32
 #include <sys/wait.h>
 #include <sys/time.h>
+#include <sys/ioctl.h>
 
 /* Run a shell command in the background; its pid, or -1. */
 long miso_spawn(const char *cmd) {
@@ -267,5 +268,18 @@ long miso_now_ms(void) {
   struct timeval tv;
   gettimeofday(&tv, NULL);
   return (long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+
+/* The width of the terminal on stdout, or 80. */
+int miso_term_cols(void) {
+  struct winsize ws;
+  if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) return ws.ws_col;
+  return 80;
+}
+
+/* Write stdout a line at a time, also to a file (the build log that
+ * miso dev shows a glimpse of while it builds); C buffers it in blocks. */
+void miso_line_buffered(void) {
+  setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
 }
 #endif
