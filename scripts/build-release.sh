@@ -32,6 +32,11 @@ fetch() {
   say "fetching $name"
   mkdir -p "$work/src/$name"
   curl -fsSL -o "$work/$name.tar.gz" "$url"
+  if [ -n "$windows" ]; then
+    # MSYS2 makes a symlink by copying its target, which fails when the target
+    # comes later in the archive; on the second pass the targets are there.
+    tar -xzf "$work/$name.tar.gz" -C "$work/src/$name" --strip-components=1 2>/dev/null || true
+  fi
   tar -xzf "$work/$name.tar.gz" -C "$work/src/$name" --strip-components=1
   rm -f "$work/$name.tar.gz"
 }
@@ -153,6 +158,8 @@ mkdir -p "$out/$name/bin"
 cp "build/miso$exe" "build/cpphs$exe" "$out/$name/bin/"
 cp -R "$db" "$out/$name/"
 rm -f "$out/$name/mhs-$version/miso-installed"
+# what comes with the tool (miso list tells these from what users install)
+(cd "$out/$name/mhs-$version/packages" && ls *.pkg) > "$out/$name/mhs-$version/miso-bundled"
 (cd "$out" && tar -czf "$name.tar.gz" "$name" && rm -rf "$name")
 if command -v sha256sum >/dev/null; then
   (cd "$out" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")

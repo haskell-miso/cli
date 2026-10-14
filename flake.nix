@@ -45,6 +45,9 @@
             mkdir -p $out/bin
             cp build/miso build/cpphs $out/bin/
             cp -r ${pkgs.miso-mhs}/lib/mcabal/mhs-${mhsVersion} $out/mhs-${mhsVersion}
+            chmod -R u+w $out/mhs-${mhsVersion}
+            # what comes with the tool (miso list tells these from what users install)
+            (cd $out/mhs-${mhsVersion}/packages && ls *.pkg) > $out/mhs-${mhsVersion}/miso-bundled
             runHook postInstall
           '';
         };

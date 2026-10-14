@@ -9,6 +9,12 @@ LDFLAGS ?=
 # the runtime configuration: unix, or mingw for Windows (with EXE=.exe)
 CONF ?= unix
 EXE ?=
+# the C libraries: winsock on Windows (miso serve/dev)
+ifeq ($(CONF),mingw)
+LIBS ?= -lws2_32
+else
+LIBS ?=
+endif
 RTS = $(MHSSRC)/src/runtime
 
 .PHONY: all clean
@@ -20,8 +26,8 @@ build/mcabal: scripts/prepare-microcabal.sh
 build/miso.c: build/mcabal src/Miso/CLI/*.hs
 	$(MHS) -i$(MHSSRC)/src -i$(MHSSRC)/mhs -ibuild/mcabal -isrc -obuild/miso.c Miso.CLI.Main
 
-build/miso$(EXE): build/miso.c
-	$(CC) $(CFLAGS) -w -I$(RTS) -I$(RTS)/$(CONF) $(RTS)/main.c $(RTS)/eval.c build/miso.c -lm $(LDFLAGS) -o build/miso$(EXE)
+build/miso$(EXE): build/miso.c cbits/serve.c cbits/serve.h
+	$(CC) $(CFLAGS) -w -I$(RTS) -I$(RTS)/$(CONF) -Icbits $(RTS)/main.c $(RTS)/eval.c build/miso.c cbits/serve.c -lm $(LIBS) $(LDFLAGS) -o build/miso$(EXE)
 
 # cpphs, which mhs runs on modules with CPP.  It is a separate program (it
 # has its own main and combinators), shipped next to miso in bin/.

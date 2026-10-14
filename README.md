@@ -19,15 +19,27 @@ miso build            # public/index.js (target: browser)
 
 | command | |
 |---|---|
-| `miso new NAME` | make a new project |
+| `miso new NAME [--template T]` | a new project; `miso templates` lists the templates (counter, router, canvas) |
 | `miso build` | install missing dependencies, and build the project of `miso.yml` |
 | `miso run [ARGS]` | build and run it (`target: native`) |
+| `miso dev [--port N]` | build, serve `public/`, and on a change of the sources rebuild and reload the page |
+| `miso serve [--port N]` | serve `public/` (default port 8000) |
+| `miso repl` | mhs, interactively, with the project's sources and packages |
+| `miso clean` | remove `dist/`, `public/`, and the caches |
 | `miso install` | install the dependencies of `miso.yml` |
-| `miso dev` | serve the app and reload it on changes (phase 2, not done yet) |
-| `miso mhs ARGS` | the MicroHs compiler |
-| `miso mcabal ARGS` | MicroCabal |
+| `miso add PKG...` / `miso remove PKG...` | edit the dependencies of `miso.yml` (keeping its comments), and install |
+| `miso list` | the installed packages: those that come with miso, and those you installed |
+| `miso update` | refresh the package list, and fetch git dependencies again (a branch moves) |
+| `miso doctor` | check the installation and the tools miso needs, and say how to fix what is missing |
+| `miso upgrade [VERSION]` | install the latest release (or `VERSION`) in place |
+| `miso mhs ARGS` / `miso mcabal ARGS` | the MicroHs compiler, and MicroCabal |
 
 Output is colored on a terminal; set `NO_COLOR=1` to turn that off.
+
+`miso dev` and `miso serve` use a small server in the binary
+(`cbits/serve.c`), on 127.0.0.1.  In dev mode HTML pages get a script that
+reloads them when a build succeeds (server sent events); a failed build
+keeps the last one.
 
 ## miso.yml
 

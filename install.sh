@@ -5,7 +5,8 @@
 #
 # Downloads the release for this OS and architecture from GitHub, checks its
 # sha256, and unpacks it in $MISO_HOME (default ~/.miso).  Set MISO_VERSION
-# to install a particular release (default: the latest).
+# to install a particular release (default: the latest), and
+# MISO_RELEASE_URL to download from somewhere else.
 set -eu
 
 repo=${MISO_REPO:-haskell-miso/cli}
@@ -37,7 +38,9 @@ system=$arch-$os
 [ "$system" = aarch64-windows ] && die "there is no release for Windows on ARM yet"
 asset=miso-$system.tar.gz
 
-if [ "$version" = latest ]; then
+if [ -n "${MISO_RELEASE_URL:-}" ]; then    # a mirror, or a local directory (file://...)
+  url=$MISO_RELEASE_URL
+elif [ "$version" = latest ]; then
   url=https://github.com/$repo/releases/latest/download
 else
   url=https://github.com/$repo/releases/download/$version
@@ -61,7 +64,9 @@ tar -C "$tmp" -xzf "$tmp/$asset"
 mkdir -p "$home"
 # A new release replaces the tool and its package database (packages from
 # miso install are installed again by the next miso build).
-rm -rf "$home/bin" "$home"/mhs-*
+# (Windows cannot delete a running miso.exe, as during miso upgrade, but can rename it.)
+[ -f "$home/bin/miso.exe" ] && mv -f "$home/bin/miso.exe" "$home/miso.exe.old" 2>/dev/null || true
+rm -rf "$home/bin" "$home"/mhs-* 2>/dev/null || true
 cp -R "$tmp/miso-$system/." "$home/"
 
 done_ "Installed $("$home/bin/miso" version)"
