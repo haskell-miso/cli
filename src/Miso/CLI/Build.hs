@@ -130,7 +130,8 @@ programArgs devBuild cfg exe out = do
       ++ programOptions cfg exe
       ++ (if check then ["-fno-code"] else
             cs
-            ++ concat [ ["-js", j] | not isNat, j <- js ]
+            -- mhs embeds the .js files it is given (emcc --pre-js)
+            ++ [ j | not isNat, j <- js ]
             ++ concat [ ["-optc", o] | n <- natives, o <- ccOptions n ]
             ++ concat [ ["-optl", o] | n <- natives, o <- ldOptions n ]
             ++ concat [ ["-optl", "-l" ++ l] | n <- natives, l <- extraLibraries n ]
