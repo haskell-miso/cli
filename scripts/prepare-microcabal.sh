@@ -17,10 +17,13 @@ for f in $(find "$dst" -name '*.hs'); do
       -e 's/^import Text\.ParserComb/import MicroCabal.ParserComb/' "$f" > "$f.tmp"
   mv "$f.tmp" "$f"
 done
+# Downloads with curl that fail on HTTP errors and follow redirects: older
+# MicroCabal runs wget, newer runs "curl -s -o" (which saves an error page).
 sed -e 's|cmd env \$ "wget --quiet --output-document=" ++ fn ++ " " ++ url|cmd env $ "curl --fail --silent --show-error --location --output " ++ fn ++ " " ++ url|' \
+    -e 's|cmd env \$ "curl -s -o" ++ fn ++ " " ++ url|cmd env $ "curl --fail --silent --show-error --location --output " ++ fn ++ " " ++ url|' \
   "$dst/MicroCabal/Unix.hs" > "$dst/MicroCabal/Unix.hs.tmp"
 mv "$dst/MicroCabal/Unix.hs.tmp" "$dst/MicroCabal/Unix.hs"
-sed -e 's/^  callCommand s$/  callCommand (viaShell s)/' \
+sed -e 's/^\( *\)callCommand s$/\1callCommand (viaShell s)/' \
     -e 's/^import System.Process(callCommand)$/import System.Process(callCommand)\
 import qualified System.Info/' \
   "$dst/MicroCabal/Unix.hs" > "$dst/MicroCabal/Unix.hs.tmp"

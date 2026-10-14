@@ -6,7 +6,7 @@
     # (pkgs.miso-mhs) come from miso's overlay, as in miso-sampler.
     miso.url = "github:dmjio/miso";
     microcabal = {
-      url = "github:haskell-miso/MicroCabal";
+      url = "github:augustss/MicroCabal";
       flake = false;
     };
   };

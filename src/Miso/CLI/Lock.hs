@@ -3,7 +3,7 @@
 -- > # miso.lock: written by miso update.  Commit it; do not edit it.
 -- > # Local (path:) dependencies are not locked.
 -- > miso: 0.1.0
--- > mhs: 0.16.7.0
+-- > mhs: 0.16.10.0
 -- > packages:
 -- >   - name: split               # from Hackage: the version, and the
 -- >     hackage: 0.2.5.1          # sha256 of its tarball
