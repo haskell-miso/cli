@@ -85,6 +85,16 @@ mhssrc=$work/src/microhs
 # On Windows this runs in MSYS2's POSIX environment (msystem MSYS), where
 # MicroHs builds with its unix configuration (its mingw one has bit-rotted).
 conf=unix
+if [ -n "$windows" ]; then
+  # MicroHs's installer copies each binary and then its permissions, with
+  # set_permissions: open(O_RDONLY) and fchmod.  In MSYS2 fchmod through a
+  # read-only handle fails (EACCES), so make install stops at the first copy
+  # with "setPermissions: permission denied".  chmod of the path works.
+  extra=$mhssrc/src/runtime/unix/extra.c
+  sed -e 's/^  result = fchmod(fd, uperms);$/  result = chmod(path, uperms);/' "$extra" > "$extra.tmp"
+  mv "$extra.tmp" "$extra"
+  grep -q '^  result = chmod(path, uperms);$' "$extra" || { echo "could not patch set_permissions in $extra" >&2; exit 1; }
+fi
 (cd "$mhssrc" && make CONF=$conf bin/mhs bin/cpphs bin/mcabal)
 export CABALDIR=$prefix HOME=$work/home
 mkdir -p "$HOME"
