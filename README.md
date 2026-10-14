@@ -20,10 +20,11 @@ miso build            # public/index.js (target: browser)
 | command | |
 |---|---|
 | `miso new NAME [--template T]` | a new project; `miso templates` lists the templates (counter, router, canvas) |
-| `miso build` | install missing dependencies, and build the project of `miso.yml` |
-| `miso run [ARGS]` | build and run it (`target: native`) |
-| `miso dev [--port N]` | build, serve `public/`, and on a change of the sources rebuild and reload the page |
+| `miso build [NAME...]` | install missing dependencies, and build the project of `miso.yml` (or the programs named) |
+| `miso run [NAME] [ARGS]` | build and run a program (`target: native`; the first one, or NAME) |
+| `miso dev [NAME] [--port N]` | build a browser program (the first one, or NAME), serve `public/`, and on a change of the sources rebuild and reload the page |
 | `miso serve [--port N]` | serve `public/` (on the first free port from 8000, or N) |
+| `miso watch [NAME]` | type check the library and the programs (or NAME) on every change, and show the first error, as ghcid does |
 | `miso repl` | mhs, interactively, with the project's sources and packages |
 | `miso clean` | remove `dist/`, `public/`, and the caches |
 | `miso install` | install the dependencies of `miso.yml` |
@@ -59,6 +60,63 @@ dependencies:
   - name: my-lib           # a local checkout, relative to miso.yml
     path: ../my-lib        # (installed again on every build)
 ```
+
+`main`, `source-dirs` and `target` there describe the project's one program.
+A project with a library, or with several programs, has sections for them
+instead:
+
+```yaml
+name: todo
+version: 0.1.0
+dependencies: [split]      # for every component
+library:                   # code the programs share
+  source-dirs: [src]       # default [src]
+  exposed-modules: [Todo]  # default: every module under source-dirs
+executables:
+  web:                     # miso build web, miso dev web, ...
+    main: Main
+    source-dirs: [app]
+    target: browser
+  cli:
+    main: Cli
+    source-dirs: [cli]
+    dependencies: [containers]   # added to the project's
+```
+
+- Every program can import the library's modules (mhs gets its
+  `source-dirs` first).  The library and each program may also have
+  `dependencies` and `mhs-options`, added to the project's.
+- `miso build` type checks the library (`mhs -fno-code`) and builds every
+  program: native ones to `dist/NAME`, a browser one to `public/`, or with
+  several browser programs, each to `public/NAME/`.
+- The top-level `main`, `source-dirs` and `target` (and the fields below)
+  cannot be used with `executables:`.  A project with just `library:` is a library: `miso build`
+  checks it, and there is nothing to run.
+
+The library, each program, and a project with one program also take:
+
+```yaml
+c-sources: [cbits/*.c]       # C files (globs; * and ? in the last part)
+js-sources: [jsbits/*.js]    # JavaScript for browser programs (emcc --pre-js)
+include-dirs: [include]      # -I for the C files and for CPP
+cpp-options: [-DDEBUG]       # for modules with {-# LANGUAGE CPP #-}
+extra-libraries: [m]         # -lm for the linker
+cc-options: [-DSCALE=2]      # for the C compiler
+ld-options: []               # for the linker
+static-dir: static           # programs only: copied next to a browser program
+```
+
+Without `c-sources`, `js-sources` or `include-dirs`, `cbits/*.c`,
+`jsbits/*.js` and `include/` are used when they are there: the library's,
+or in a project without one, each program's.  What a library has goes into
+every program.  Browser programs are built with WebAssembly's current
+exception instructions (`-sWASM_LEGACY_EXCEPTIONS=0`), which browsers keep;
+the old `try` instruction is deprecated.
+
+`miso watch` runs `mhs -fno-code` (under a second, where a build with emcc
+takes many) on the library and each program, clears the screen, and shows
+`All good` or the first error as `file:line:col: message`.  mhs stops at the
+first error, so after fixing one, the next shows on the next save.
 
 base, containers, mtl, transformers, array, and miso come with the tool.
 Other packages are installed next to them, in `~/.miso/mhs-VERSION`

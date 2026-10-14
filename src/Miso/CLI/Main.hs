@@ -4,10 +4,11 @@
 -- (miso mcabal ...) are linked in, and the project commands use them.
 module Miso.CLI.Main (main) where
 
-import Control.Exception (catch)
-import Control.Monad (forM_, when)
+import Control.Exception (AsyncException (..), catch, throwIO)
+import Control.Monad (forM, forM_, unless, when)
+import Data.List (intercalate)
 import Foreign.C.Types (CInt (..))
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 import System.Environment (getArgs, lookupEnv, withArgs)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (hFlush, stderr, stdout)
@@ -17,11 +18,12 @@ import qualified MicroCabal.Main as MCabal
 import qualified MicroHs.Main as MHS
 import MicroHs.Compile (mhsVersion)
 
+import Miso.CLI.Build
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Deps
 import Miso.CLI.Doctor (doctor)
-import Miso.CLI.Serve (dev, serve)
+import Miso.CLI.Serve (dev, serve, watch)
 import Miso.CLI.Templates (templateNames, templates)
 import Miso.CLI.Util
 
@@ -32,10 +34,14 @@ foreign import ccall "exit" c_exit :: CInt -> IO ()
 foreign import ccall "serve.h miso_line_buffered" c_lineBuffered :: IO ()
 
 main :: IO ()
-main = main' `catch` \e -> do
+main = (main' `catch` \e -> do
   hFlush stdout
   hFlush stderr
-  c_exit (case e of { ExitSuccess -> 0; ExitFailure n -> fromIntegral n })
+  c_exit (case e of { ExitSuccess -> 0; ExitFailure n -> fromIntegral n }))
+  -- Ctrl-C (miso watch waits in Haskell, where it arrives as an exception)
+  `catch` \e -> case e of
+    UserInterrupt -> putStrLn "" >> hFlush stdout >> c_exit 130
+    _ -> throwIO e
 
 main' :: IO ()
 main' = do
@@ -47,10 +53,11 @@ main' = do
     ["new", name, "--template", t] -> new t name
     ["new", "--template", t, name] -> new t name
     ["templates"]      -> listTemplates
-    ["build"]          -> withConfig (build False) >> pure ()
-    ["build", "--dev"] -> withConfig (build True) >> pure ()
-    "run" : as         -> withConfig (\cfg -> build False cfg >>= runExe as)
-    "dev" : as         -> port as >>= \p -> withConfig (dev p)
+    "build" : as       -> withConfig (build ("--dev" `elem` as) (filter (/= "--dev") as))
+    "run" : as         -> withConfig (runProgram as)
+    "dev" : as         -> let (n, as') = named as in port as' >>= \p -> withConfig (dev p n)
+    ["watch"]          -> withConfig (watch Nothing)
+    ["watch", n]       -> withConfig (watch (Just n))
     "serve" : as       -> port as >>= serve
     ["clean"]          -> clean
     ["repl"]           -> repl
@@ -83,10 +90,11 @@ usage = do
   tool <- section "The tool"
   ls <- sequence
     [ cmd "new NAME [--template T]" "make a new project (miso templates lists them)"
-    , cmd "build" "build the project of miso.yml"
-    , cmd "run [ARGS]" "build and run it (target: native)"
-    , cmd "dev [--port N]" "serve it, rebuild on changes, and reload the page"
+    , cmd "build [NAME...]" "build the project of miso.yml (or the programs named)"
+    , cmd "run [NAME] [ARGS]" "build and run a program (target: native)"
+    , cmd "dev [NAME] [--port N]" "serve a program, rebuild on changes, and reload the page"
     , cmd "serve [--port N]" "serve public/"
+    , cmd "watch [NAME]" "type check on every change, and show the first error"
     , cmd "repl" "mhs, interactively, with the project's sources"
     , cmd "clean" "remove what builds make (dist/, public/, caches)"
     ]
@@ -114,6 +122,14 @@ usage = do
 
 printVersion :: IO ()
 printVersion = putStrLn ("miso " ++ version ++ " (MicroHs " ++ mhsVersion ++ ")")
+
+-- | A program's name, before or after the other arguments.
+named :: [String] -> (Maybe String, [String])
+named as =
+  case as of
+    n : rest | take 1 n /= "-" -> (Just n, rest)
+    ["--port", p, n] -> (Just n, ["--port", p])
+    _ -> (Nothing, as)
 
 -- | --port N, or Nothing: the first free port from 8000.
 port :: [String] -> IO (Maybe Int)
@@ -145,36 +161,32 @@ runMcabal as = setupEnv >> withArgs as MCabal.main
 -----------------------------------------------------------------------------
 -- Project commands
 
--- | Build the project, and return the output file.  A browser target
--- builds public/index.js, next to a copy of static/.  A dev build (for
--- miso dev) compiles the C without optimization: emcc takes about a third
--- of the time of -Oz, for a bigger file, which does not matter on localhost.
--- It is verbose too: miso dev shows what mhs is doing while it builds.
-build :: Bool -> Config -> IO FilePath
-build devBuild cfg = do
+-- | Build the programs named, or the whole project: check the library
+-- (with mhs -fno-code, as a library alone makes no program) and build every
+-- program.
+build :: Bool -> [String] -> Config -> IO ()
+build devBuild names cfg = do
+  exes <- mapM (either failWith pure . findProgram cfg) names
   installDeps cfg
-  let native = maybe True (== "native") (cfgTarget cfg)
-      outDir = if native then "dist" else "public"
-      outFile = if native then "dist/" ++ cfgName cfg else "public/index.js"
-      args = [ "-i" ++ d | d <- cfgSourceDirs cfg ]
-          ++ (if native then [] else maybe [] (\t -> ["-t" ++ t]) (cfgTarget cfg))
-          ++ cfgMhsOptions cfg
-          ++ (if devBuild && not native then ["-optc", "-O0"] else [])
-          ++ (if devBuild then ["-v"] else [])
-          ++ ["-o" ++ outFile, cfgMain cfg]
-  createDirectoryIfMissing True outDir
-  static <- doesDirectoryExist "static"
-  when (static && not native) $ run "cp -R static/. public/"
-  info ("Building " ++ cfgName cfg ++ " " ++ cfgVersion cfg)
-  runSelf ("mhs " ++ unwords (map quote args))
-  success ("Built " ++ outFile)
-  pure outFile
+  when (null names) $ maybe (pure ()) (checkLibrary cfg) (cfgLibrary cfg)
+  forM_ (if null names then cfgExecutables cfg else exes) (buildProgram devBuild cfg)
 
-runExe :: [String] -> FilePath -> IO ()
-runExe as exe = do
-  when (".js" `isSuffixOf'` exe) $ failWith "miso run runs native programs; use miso dev or miso serve for a browser target"
-  r <- system (shell (unwords (map quote (("./" ++ exe) : as))))
+-- | miso run [NAME] [--] [ARGS]: build a native program (the one named, or
+-- the first) and run it.
+runProgram :: [String] -> Config -> IO ()
+runProgram as cfg = do
+  (exe, args) <- case as of
+    n : rest | Right e <- findProgram cfg n -> pure (e, rest)
+    _ -> case filter isNative (cfgExecutables cfg) of
+           e : _ -> pure (e, as)
+           [] | null (cfgExecutables cfg) -> failWith (noProgram cfg "nothing to run")
+              | otherwise -> failWith "miso run runs native programs; use miso dev or miso serve for a browser target"
+  unless (isNative exe) $ failWith (exeName exe ++ " is for a browser; miso run runs native programs (miso dev serves it)")
+  installDeps cfg
+  out <- buildProgram False cfg exe
+  r <- system (shell (unwords (map quote (("./" ++ out) : dropDashes args))))
   exitWith r
+  where dropDashes xs = case xs of { "--" : r -> r; _ -> xs }
 
 clean :: IO ()
 clean = do
@@ -192,7 +204,7 @@ repl :: IO ()
 repl = do
   isProject <- doesFileExist configFile
   args <- if isProject
-            then withConfig $ \cfg -> pure ([ "-i" ++ d | d <- cfgSourceDirs cfg ] ++ cfgMhsOptions cfg)
+            then withConfig $ \cfg -> pure ([ "-i" ++ d | d <- allSourceDirs cfg ] ++ cfgMhsOptions cfg ++ maybe [] libMhsOptions (cfgLibrary cfg))
             else pure []
   when isProject $ withConfig installDeps
   runMhs (args ++ ["--interactive"])
