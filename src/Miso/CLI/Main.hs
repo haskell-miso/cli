@@ -28,6 +28,8 @@ import Miso.CLI.Util
 -- Exit with the code of an ExitCode exception (from mhs, mcabal, or us);
 -- not every runtime does that for an uncaught one.
 foreign import ccall "exit" c_exit :: CInt -> IO ()
+-- cbits/serve.c
+foreign import ccall "serve.h miso_line_buffered" c_lineBuffered :: IO ()
 
 main :: IO ()
 main = main' `catch` \e -> do
@@ -129,6 +131,7 @@ port as =
 -- executable.)  A bare -a clears the package path, so it is left alone.
 runMhs :: [String] -> IO ()
 runMhs as = do
+  c_lineBuffered
   setupCpphs
   pd <- pkgDir
   createDirectoryIfMissing True pd
@@ -146,6 +149,7 @@ runMcabal as = setupEnv >> withArgs as MCabal.main
 -- builds public/index.js, next to a copy of static/.  A dev build (for
 -- miso dev) compiles the C without optimization: emcc takes about a third
 -- of the time of -Oz, for a bigger file, which does not matter on localhost.
+-- It is verbose too: miso dev shows what mhs is doing while it builds.
 build :: Bool -> Config -> IO FilePath
 build devBuild cfg = do
   installDeps cfg
@@ -156,6 +160,7 @@ build devBuild cfg = do
           ++ (if native then [] else maybe [] (\t -> ["-t" ++ t]) (cfgTarget cfg))
           ++ cfgMhsOptions cfg
           ++ (if devBuild && not native then ["-optc", "-O0"] else [])
+          ++ (if devBuild then ["-v"] else [])
           ++ ["-o" ++ outFile, cfgMain cfg]
   createDirectoryIfMissing True outDir
   static <- doesDirectoryExist "static"
