@@ -6,3 +6,4 @@ long miso_mtime(const char *path);
 long miso_spawn(const char *cmd);
 int miso_child_done(long pid);
 long miso_now_ms(void);
+void miso_quit_on_ctrl_c(void);

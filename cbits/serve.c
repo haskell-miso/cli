@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "serve.h"
@@ -25,7 +26,6 @@ typedef SOCKET sock_t;
 #else
 #include <unistd.h>
 #include <fcntl.h>
-#include <signal.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <netinet/in.h>
@@ -211,6 +211,15 @@ void miso_serve_poll(int ms) {
     tv.tv_sec = 0;
     tv.tv_usec = 0;
   }
+}
+
+/*
+ * Quit on Ctrl-C at once.  The MicroHs runtime's handler only notes the
+ * signal, for the program to see when it next switches threads, which a
+ * server waiting in select seldom does: it took seconds to stop.
+ */
+void miso_quit_on_ctrl_c(void) {
+  signal(SIGINT, SIG_DFL);
 }
 
 /* Tell the pages to reload (they poll /__miso/version). */
