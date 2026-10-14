@@ -99,6 +99,16 @@ fi
 export CABALDIR=$prefix HOME=$work/home
 mkdir -p "$HOME"
 (cd "$mhssrc" && make CONF=$conf MCABAL="$prefix" install)
+if [ -n "$windows" ]; then
+  # With the unix configuration the installer copies bin/mhs (gcc's
+  # bin/mhs.exe, which MSYS2 also finds without the .exe) to bin/mhs,
+  # without .exe; give the installed programs their .exe back.
+  for b in mhs cpphs mcabal; do
+    if [ ! -f "$prefix/bin/$b.exe" ]; then
+      mv "$prefix/bin/$b" "$prefix/bin/$b.exe"
+    fi
+  done
+fi
 version=$(cd "$prefix" && ls -d mhs-* | head -1 | sed 's/^mhs-//')
 db=$prefix/mhs-$version
 # mcabal runs mhs from the PATH
