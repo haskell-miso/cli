@@ -224,3 +224,39 @@ long miso_mtime(const char *path) {
   if (stat(path, &st)) return -1;
   return (long)st.st_mtime;
 }
+
+/*
+ * Running a build while serving: miso dev starts the build with
+ * miso_spawn and polls the server until miso_child_done says it finished.
+ * (MSYS2 is POSIX here: _WIN32 is not defined there.)
+ */
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <sys/time.h>
+
+/* Run a shell command in the background; its pid, or -1. */
+long miso_spawn(const char *cmd) {
+  pid_t pid = fork();
+  if (pid == 0) {
+    execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+    _exit(127);
+  }
+  return (long)pid;
+}
+
+/* -1 while the command runs, then its exit code. */
+int miso_child_done(long pid) {
+  int st;
+  pid_t r = waitpid((pid_t)pid, &st, WNOHANG);
+  if (r == 0) return -1;
+  if (r < 0) return 1;
+  return WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+}
+
+/* Milliseconds, for timing builds. */
+long miso_now_ms(void) {
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return (long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
+}
+#endif

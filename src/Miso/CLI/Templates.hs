@@ -19,7 +19,7 @@ templates template name =
       [ ("miso.yml", misoYml name)
       , ("app/Main.hs", mainHs name)
       , ("static/index.html", indexHtml name)
-      , (".gitignore", "public/\ndist/\n.mhscache\n")
+      , (".gitignore", "public/\ndist/\n.mhscache\n.miso-build.log\n")
       , ("README.md", readme name)
       ]
 

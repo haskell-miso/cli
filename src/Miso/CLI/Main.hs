@@ -169,8 +169,8 @@ runExe as exe = do
 
 clean :: IO ()
 clean = do
-  let dirs = ["dist", "public", ".mhscache", "dist-mcabal"]
-  there <- filterM' doesDirectoryExist dirs
+  let dirs = ["dist", "public", ".mhscache", "dist-mcabal", ".miso-build.log"]
+  there <- filterM' (\p -> (||) <$> doesDirectoryExist p <*> doesFileExist p) dirs
   if null there
     then step "nothing to clean"
     else do
