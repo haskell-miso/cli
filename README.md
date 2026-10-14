@@ -38,7 +38,7 @@ Output is colored on a terminal; set `NO_COLOR=1` to turn that off.
 
 `miso dev` and `miso serve` use a small server in the binary
 (`cbits/serve.c`), on 127.0.0.1.  In dev mode HTML pages get a script that
-reloads them when a build succeeds (server sent events); a failed build
+polls the server and reloads them when a build succeeds; a failed build
 keeps the last one.
 
 ## miso.yml

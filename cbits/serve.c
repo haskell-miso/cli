@@ -3,9 +3,11 @@
  *
  * Single threaded: miso calls miso_serve_poll, which handles what is ready
  * (with select) and returns, so the caller can watch the sources between
- * polls.  In dev mode HTML pages get a script that listens on
- * /__miso/events (server sent events), and miso_serve_reload tells those
- * pages to reload.
+ * polls.  In dev mode HTML pages get a script (in <head>, before the app
+ * runs) that polls /__miso/version, a number that miso_serve_reload
+ * increases, and reloads the page when it changes.  Polling, unlike a held
+ * connection, also reaches a page opened during a build, or one whose
+ * connection dropped.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,16 +35,16 @@ typedef int sock_t;
 #define BAD_SOCK (-1)
 #endif
 
-#define MAX_EVENT_CLIENTS 64
-
 static sock_t listener = BAD_SOCK;
 static char root[1024];
 static int dev_mode;
-static sock_t events[MAX_EVENT_CLIENTS];
-static int nevents;
+static long build_version;
 
 static const char reload_script[] =
-  "<script>new EventSource('/__miso/events').onmessage = function () { location.reload(); };</script>";
+  "<script>(function () { var v = null; setInterval(function () {"
+  " fetch('/__miso/version', { cache: 'no-store' }).then(function (r) { return r.text(); })"
+  ".then(function (t) { if (v === null) v = t; else if (t !== v) { console.log('miso dev: reloading'); location.reload(); } })"
+  ".catch(function () {}); }, 500); })();</script>";
 
 static const char *mime(const char *path) {
   const char *dot = strrchr(path, '.');
@@ -95,12 +97,12 @@ static char *read_file(const char *path, size_t *len) {
   return buf;
 }
 
-/* Put the reload script before </body>, or at the end. */
+/* Put the reload script before </head> (so it runs before the app), or at the start. */
 static void inject(char *buf, size_t *len) {
-  size_t sl = sizeof reload_script - 1, at = *len, i;
+  size_t sl = sizeof reload_script - 1, at = 0, i;
   buf[*len] = 0;
   for (i = 0; i + 7 <= *len; i++)
-    if (!strncmp(buf + i, "</body>", 7) || !strncmp(buf + i, "</BODY>", 7)) { at = i; break; }
+    if (!strncmp(buf + i, "</head>", 7) || !strncmp(buf + i, "</HEAD>", 7)) { at = i; break; }
   memmove(buf + at + sl, buf + at, *len - at);
   memcpy(buf + at, reload_script, sl);
   *len += sl;
@@ -135,11 +137,11 @@ static void handle(sock_t s) {
   }
   path[j] = 0;
 
-  if (dev_mode && !strcmp(path, "/__miso/events")) {
-    const char *head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
-                       "Cache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
-    send_all(s, head, strlen(head));
-    if (nevents < MAX_EVENT_CLIENTS) events[nevents++] = s; else CLOSE(s);
+  if (dev_mode && !strcmp(path, "/__miso/version")) {
+    char body[32];
+    int n = snprintf(body, sizeof body, "%ld", build_version);
+    respond(s, "200 OK", "text/plain", body, (size_t)n);
+    CLOSE(s);
     return;
   }
   if (strstr(path, "..") || path[0] != '/') {
@@ -211,15 +213,9 @@ void miso_serve_poll(int ms) {
   }
 }
 
-/* Tell the pages to reload. */
+/* Tell the pages to reload (they poll /__miso/version). */
 void miso_serve_reload(void) {
-  static const char msg[] = "data: reload\n\n";
-  int i;
-  for (i = 0; i < nevents; i++) {
-    send(events[i], msg, (int)sizeof msg - 1, 0);
-    CLOSE(events[i]);
-  }
-  nevents = 0;
+  build_version++;
 }
 
 /* The modification time of a file (seconds), or -1. */
