@@ -45,8 +45,9 @@ main' = do
     ["new", name, "--template", t] -> new t name
     ["new", "--template", t, name] -> new t name
     ["templates"]      -> listTemplates
-    ["build"]          -> withConfig build >> pure ()
-    "run" : as         -> withConfig (\cfg -> build cfg >>= runExe as)
+    ["build"]          -> withConfig (build False) >> pure ()
+    ["build", "--dev"] -> withConfig (build True) >> pure ()
+    "run" : as         -> withConfig (\cfg -> build False cfg >>= runExe as)
     "dev" : as         -> port as >>= \p -> withConfig (dev p)
     "serve" : as       -> port as >>= serve
     ["clean"]          -> clean
@@ -142,9 +143,11 @@ runMcabal as = setupEnv >> withArgs as MCabal.main
 -- Project commands
 
 -- | Build the project, and return the output file.  A browser target
--- builds public/index.js, next to a copy of static/.
-build :: Config -> IO FilePath
-build cfg = do
+-- builds public/index.js, next to a copy of static/.  A dev build (for
+-- miso dev) compiles the C without optimization: emcc takes about a third
+-- of the time of -Oz, for a bigger file, which does not matter on localhost.
+build :: Bool -> Config -> IO FilePath
+build devBuild cfg = do
   installDeps cfg
   let native = maybe True (== "native") (cfgTarget cfg)
       outDir = if native then "dist" else "public"
@@ -152,6 +155,7 @@ build cfg = do
       args = [ "-i" ++ d | d <- cfgSourceDirs cfg ]
           ++ (if native then [] else maybe [] (\t -> ["-t" ++ t]) (cfgTarget cfg))
           ++ cfgMhsOptions cfg
+          ++ (if devBuild && not native then ["-optc", "-O0"] else [])
           ++ ["-o" ++ outFile, cfgMain cfg]
   createDirectoryIfMissing True outDir
   static <- doesDirectoryExist "static"

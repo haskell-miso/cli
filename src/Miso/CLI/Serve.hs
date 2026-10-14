@@ -83,7 +83,7 @@ devBuild cfg = do
   exe <- self
   let logFile = ".miso-build.log"
   t0 <- c_nowMs
-  pid <- withCAString (quote exe ++ " build > " ++ logFile ++ " 2>&1") c_spawn
+  pid <- withCAString (quote exe ++ " build --dev > " ++ logFile ++ " 2>&1") c_spawn
   tty <- isTerminal
   label <- colored 1 [Bold, Blue] "==>"
   let frame :: Int -> IO ()
