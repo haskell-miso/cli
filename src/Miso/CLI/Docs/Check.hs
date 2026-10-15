@@ -5,7 +5,7 @@ module Miso.CLI.Docs.Check (typeCheck) where
 
 import Control.Exception (SomeException, evaluate, try)
 import Data.Char (isAlphaNum, isUpper)
-import qualified Data.Map as M
+import qualified Miso.CLI.Docs.Map as M
 
 import MicroHs.Compile (compileMany, getPaths)
 import MicroHs.CompileCache (emptyCache, getCompMdls)

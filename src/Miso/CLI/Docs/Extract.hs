@@ -19,7 +19,7 @@ module Miso.CLI.Docs.Extract
 
 import Data.Char (isAlphaNum, isSpace, isUpper, ord)
 import Data.List (isPrefixOf, nub)
-import qualified Data.Map as M
+import qualified Miso.CLI.Docs.Map as M
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 
 import Miso.CLI.Docs.Lex
