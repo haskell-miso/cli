@@ -15,13 +15,44 @@
 -- >   - name: my-lib           # a local checkout (relative to miso.yml)
 -- >     path: ../my-lib
 --
+-- main, source-dirs and target there are a shorthand for a project with one
+-- program.  A project with a library, or with several programs, has
+-- sections for them instead:
+--
+-- > library:                   # code the programs share
+-- >   source-dirs: [src]       # default [src]
+-- >   exposed-modules: [Todo]  # default: every module under source-dirs
+-- > executables:
+-- >   web:                     # a name, for miso build web, miso dev web, ...
+-- >     main: Main
+-- >     source-dirs: [app]
+-- >     target: browser
+-- >   cli:
+-- >     main: Cli
+-- >     source-dirs: [cli]
+-- >     dependencies: [split]  # added to the project's
+--
+-- The library and each program may also have dependencies and
+-- mhs-options, added to the project's.
+--
 -- miso itself, and base, containers, mtl, ... come installed with the tool.
 --
 -- Only the part of YAML these files need is supported: mappings, lists
 -- (block and [a, b]), scalars, and comments.
 module Miso.CLI.Config
   ( Config (..)
+  , Library (..)
+  , Executable (..)
+  , Native (..)
   , Dep (..)
+  , allDeps
+  , isNative
+  , programDirs
+  , programOptions
+  , webDir
+  , allSourceDirs
+  , findProgram
+  , noProgram
   , readConfig
   , parseConfig
   , configFile
@@ -33,22 +64,112 @@ module Miso.CLI.Config
   , parseYAML
   ) where
 
-import Data.Char (isDigit, isSpace)
-import Data.List (isPrefixOf)
+import Data.Char (isAlpha, isAlphaNum, isDigit, isSpace)
+import Data.List (intercalate, isPrefixOf)
 import System.Directory (doesFileExist)
 
 configFile :: FilePath
 configFile = "miso.yml"
 
 data Config = Config
-  { cfgName       :: String
-  , cfgVersion    :: String
-  , cfgMain       :: String
-  , cfgSourceDirs :: [FilePath]
-  , cfgTarget     :: Maybe String
-  , cfgMhsOptions :: [String]
-  , cfgDeps       :: [Dep]
+  { cfgName        :: String
+  , cfgVersion     :: String
+  , cfgMhsOptions  :: [String]      -- ^ for every component
+  , cfgDeps        :: [Dep]         -- ^ the top-level list, which miso add edits
+  , cfgLibrary     :: Maybe Library
+  , cfgExecutables :: [Executable]  -- ^ in the order of miso.yml
   } deriving (Show)
+
+data Library = Library
+  { libSourceDirs  :: [FilePath]
+  , libExposed     :: Maybe [String]  -- ^ Nothing: every module under the source dirs
+  , libMhsOptions  :: [String]
+  , libDeps        :: [Dep]
+  , libNative      :: Native
+  } deriving (Show)
+
+data Executable = Executable
+  { exeName        :: String
+  , exeMain        :: String
+  , exeSourceDirs  :: [FilePath]
+  , exeTarget      :: Maybe String
+  , exeMhsOptions  :: [String]
+  , exeDeps        :: [Dep]
+  , exeNative      :: Native
+  , exeStaticDir   :: FilePath        -- ^ copied next to a browser program
+  } deriving (Show)
+
+-- | What goes to the C compiler, cpphs and emcc, of the library or of a
+-- program.  The lists of files are globs (cbits/*.c); Nothing is the
+-- default: cbits/*.c, jsbits/*.js and include/, of the library, or when
+-- there is none, of the programs.
+data Native = Native
+  { cSources       :: Maybe [String]
+  , jsSources      :: Maybe [String]
+  , includeDirs    :: Maybe [FilePath]
+  , cppOptions     :: [String]        -- ^ -D, -I for cpphs (and the C compiler)
+  , extraLibraries :: [String]        -- ^ -l for the linker
+  , ccOptions      :: [String]
+  , ldOptions      :: [String]
+  } deriving (Show)
+
+nativeFields :: [String]
+nativeFields = ["c-sources", "js-sources", "include-dirs", "cpp-options", "extra-libraries", "cc-options", "ld-options"]
+
+native :: [(String, Value)] -> Either String Native
+native kvs =
+  Native <$> optList "c-sources" <*> optList "js-sources" <*> optList "include-dirs"
+         <*> list' "cpp-options" <*> list' "extra-libraries" <*> list' "cc-options" <*> list' "ld-options"
+  where
+    optList k = maybe (Right Nothing) (fmap Just . strs) (lookup k kvs)
+    list' k = maybe (Right []) strs (lookup k kvs)
+
+-- | A program for this machine, rather than for a browser.
+isNative :: Executable -> Bool
+isNative e = maybe True (== "native") (exeTarget e)
+
+-- | The dependencies of the project and of all its components.
+allDeps :: Config -> [Dep]
+allDeps cfg = nubOn depName (cfgDeps cfg ++ maybe [] libDeps (cfgLibrary cfg) ++ concatMap exeDeps (cfgExecutables cfg))
+
+-- | Where mhs looks for a program's modules: the library's, then its own.
+programDirs :: Config -> Executable -> [FilePath]
+programDirs cfg e = maybe [] libSourceDirs (cfgLibrary cfg) ++ exeSourceDirs e
+
+-- | The mhs options of a program: the project's, the library's, its own.
+programOptions :: Config -> Executable -> [String]
+programOptions cfg e = cfgMhsOptions cfg ++ maybe [] libMhsOptions (cfgLibrary cfg) ++ exeMhsOptions e
+
+-- | Where a browser program goes: public/, or with several browser
+-- programs, public/NAME/.
+webDir :: Config -> Executable -> FilePath
+webDir cfg e
+  | length (filter (not . isNative) (cfgExecutables cfg)) > 1 = "public/" ++ exeName e
+  | otherwise = "public"
+
+-- | The source dirs of every component.
+allSourceDirs :: Config -> [FilePath]
+allSourceDirs cfg = nubOn id (maybe [] libSourceDirs (cfgLibrary cfg) ++ concatMap exeSourceDirs (cfgExecutables cfg))
+
+findProgram :: Config -> String -> Either String Executable
+findProgram cfg n =
+  case [ e | e <- cfgExecutables cfg, exeName e == n ] of
+    e : _ -> Right e
+    [] -> Left (noProgram cfg ("no program " ++ n ++ " in miso.yml"))
+
+-- | A message that there is no such program, with the ones there are.
+noProgram :: Config -> String -> String
+noProgram cfg msg =
+  case map exeName (cfgExecutables cfg) of
+    [] -> msg ++ " (" ++ cfgName cfg ++ " is a library: it has no executables)"
+    ns -> msg ++ " (its programs: " ++ intercalate ", " ns ++ ")"
+
+nubOn :: Eq b => (a -> b) -> [a] -> [a]
+nubOn f = go []
+  where
+    go _ [] = []
+    go seen (x : xs) | f x `elem` seen = go seen xs
+                     | otherwise = x : go (f x : seen) xs
 
 data Dep = Dep
   { depName  :: String
@@ -178,17 +299,72 @@ toConfig (Map kvs) = do
            Just v -> str v
            Nothing -> Left missingVersion
   checkVersion ver
-  main' <- maybe (Right "Main") str (lookup "main" kvs)
-  dirs <- maybe (Right ["app"]) strs (lookup "source-dirs" kvs)
-  target <- maybe (Right Nothing) (fmap Just . str) (lookup "target" kvs)
   opts <- maybe (Right []) strs (lookup "mhs-options" kvs)
   deps <- maybe (Right []) depsOf (lookup "dependencies" kvs)
-  mapM_ known (map fst kvs)
-  Right (Config name ver main' dirs target opts deps)
+  mapM_ (known "" (["name", "version", "mhs-options", "dependencies", "library", "executables"] ++ flatKeys)) (map fst kvs)
+  lib <- maybe (Right Nothing) (fmap Just . library) (lookup "library" kvs)
+  let flat = [ k | (k, _) <- kvs, k `elem` flatKeys ]
+      hasLib = maybe False (const True) lib
+  exes <- case lookup "executables" kvs of
+    Just v | not (null flat) -> Left ("miso.yml: with executables:, " ++ intercalate ", " flat ++ " go under a program's name there (or library:), not at the top level")
+           | otherwise -> executables v
+    Nothing | hasLib && null flat -> Right []
+            | otherwise -> (: []) <$> executable name (Map [ kv | kv@(k, _) <- kvs, k `elem` flatKeys ])
+  let cfg = Config name ver opts deps lib exes
+  checkSources (cfgDeps cfg ++ maybe [] libDeps lib ++ concatMap exeDeps exes)
+  Right cfg
   where
-    known k | k `elem` ["name", "version", "main", "source-dirs", "target", "mhs-options", "dependencies"] = Right ()
-            | otherwise = Left ("miso.yml: unknown field " ++ k)
+    flatKeys = ["main", "source-dirs", "target", "static-dir"] ++ nativeFields
 toConfig _ = Left "miso.yml: expected fields (name: ...)"
+
+library :: Value -> Either String Library
+library (Map kvs) = do
+  mapM_ (known "library" (["source-dirs", "exposed-modules", "mhs-options", "dependencies"] ++ nativeFields)) (map fst kvs)
+  Library <$> maybe (Right ["src"]) strs (lookup "source-dirs" kvs)
+          <*> maybe (Right Nothing) (fmap Just . strs) (lookup "exposed-modules" kvs)
+          <*> maybe (Right []) strs (lookup "mhs-options" kvs)
+          <*> maybe (Right []) depsOf (lookup "dependencies" kvs)
+          <*> native kvs
+library v = Left ("miso.yml: library should have fields (source-dirs: ...), found " ++ show v)
+
+executables :: Value -> Either String [Executable]
+executables (Map kvs) = do
+  when' (null kvs) (Left "miso.yml: executables: has none (a name, then its main: and source-dirs:)")
+  mapM (\(n, v) -> executable n v) kvs
+executables v = Left ("miso.yml: executables should be names with their fields (web: ...), found " ++ show v)
+
+executable :: String -> Value -> Either String Executable
+executable n (Map kvs) = do
+  when' (not (validName n)) (Left ("miso.yml: " ++ n ++ " is not a name for a program (a letter, then letters, digits and -)"))
+  mapM_ (known ("executables." ++ n) (["main", "source-dirs", "target", "mhs-options", "dependencies", "static-dir"] ++ nativeFields)) (map fst kvs)
+  Executable n <$> maybe (Right "Main") str (lookup "main" kvs)
+               <*> maybe (Right ["app"]) strs (lookup "source-dirs" kvs)
+               <*> maybe (Right Nothing) (fmap Just . str) (lookup "target" kvs)
+               <*> maybe (Right []) strs (lookup "mhs-options" kvs)
+               <*> maybe (Right []) depsOf (lookup "dependencies" kvs)
+               <*> native kvs
+               <*> maybe (Right "static") str (lookup "static-dir" kvs)
+executable n v = Left ("miso.yml: executables." ++ n ++ " should have fields (main: ...), found " ++ show v)
+
+known :: String -> [String] -> String -> Either String ()
+known section ks k
+  | k `elem` ks = Right ()
+  | otherwise = Left ("miso.yml: unknown field " ++ (if null section then "" else section ++ ".") ++ k)
+
+validName :: String -> Bool
+validName n = case n of
+  c : cs -> isAlpha c && all (\x -> isAlphaNum x || x == '-') cs
+  [] -> False
+
+when' :: Bool -> Either String () -> Either String ()
+when' b e = if b then e else Right ()
+
+-- | A dependency listed in several places must come from the same place.
+checkSources :: [Dep] -> Either String ()
+checkSources ds =
+  case [ depName a | (i, a) <- zip [0 :: Int ..] ds, (j, b) <- zip [0 ..] ds, i < j, depName a == depName b, a /= b ] of
+    n : _ -> Left ("miso.yml: " ++ n ++ " is listed twice, differently; list it once, at the top level")
+    [] -> Right ()
 
 missingVersion :: String
 missingVersion = "miso.yml: missing version (every miso.yml has one, e.g. version: 0.1.0)"

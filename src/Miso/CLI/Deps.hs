@@ -50,13 +50,13 @@ installDeps cfg = do
   case lock of
     Nothing -> pure ()
     Just _ ->
-      forM_ [ d | d <- cfgDeps cfg, not (isLocal d), depName d `notElem` bundled, locked d == Nothing ] $ \d ->
+      forM_ [ d | d <- allDeps cfg, not (isLocal d), depName d `notElem` bundled, locked d == Nothing ] $ \d ->
         warn (depName d ++ " is not locked in " ++ lockFile ++ " (new, or changed in miso.yml); miso update locks it")
   done <- readStamp
   stamp <- stampFile
   -- the stamp of a locked dependency has its version or commit: a new lock installs it again
   let key d = show d ++ maybe "" (\l -> " " ++ show l) (locked d)
-      todo = [ d | d <- cfgDeps cfg, isLocal d || key d `notElem` done ]
+      todo = [ d | d <- allDeps cfg, isLocal d || key d `notElem` done ]
   if null todo
     then step "dependencies are installed"
     else forM_ todo $ \d -> do
@@ -275,7 +275,7 @@ updateDeps cfg = do
   old <- maybe [] id <$> readLock
   bundled <- bundledNames
   info ("Locking the dependencies in " ++ lockFile)
-  new <- fmap concat $ mapM (lockDep old bundled) (cfgDeps cfg)
+  new <- fmap concat $ mapM (lockDep old bundled) (allDeps cfg)
   writeLock new
   case describeChanges old new of
     [] -> success (lockFile ++ " is up to date")

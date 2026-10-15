@@ -1,7 +1,7 @@
 -- | miso doctor: check what miso needs, and say how to fix what is missing.
 module Miso.CLI.Doctor (doctor) where
 
-import Control.Monad (when)
+import Control.Monad (forM_, when)
 import Data.IORef
 import Data.List (isPrefixOf)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
@@ -68,15 +68,19 @@ doctor = do
       Left e -> bad "miso.yml" e
       Right cfg -> do
         ok ("miso.yml (" ++ cfgName cfg ++ " " ++ cfgVersion cfg ++ ")")
-        dirs <- mapM doesDirectoryExist (cfgSourceDirs cfg)
-        check (and dirs) ("source dirs: " ++ unwords (cfgSourceDirs cfg)) "a source dir of miso.yml does not exist"
-        let browser = maybe False (`elem` ["browser", "browser_js"]) (cfgTarget cfg)
+        forM_ (maybe [] (: []) (cfgLibrary cfg)) $ \lib ->
+          ok ("library (" ++ unwords (libSourceDirs lib) ++ ")")
+        forM_ (cfgExecutables cfg) $ \e ->
+          ok ("program " ++ exeName e ++ " (" ++ exeMain e ++ " in " ++ unwords (exeSourceDirs e) ++ ", target " ++ maybe "native" id (exeTarget e) ++ ")")
+        dirs <- mapM doesDirectoryExist (allSourceDirs cfg)
+        check (and dirs) ("source dirs: " ++ unwords (allSourceDirs cfg)) "a source dir of miso.yml does not exist"
+        let browser = any (maybe False (`elem` ["browser", "browser_js"]) . exeTarget) (cfgExecutables cfg)
         when browser $ do
           hasEmcc <- have "emcc"
           check hasEmcc "emcc (target: browser)" "install emscripten: https://emscripten.org/docs/getting_started/downloads.html"
-        locals <- mapM (\d -> maybe (pure True) doesDirectoryExist (depPath d)) (cfgDeps cfg)
+        locals <- mapM (\d -> maybe (pure True) doesDirectoryExist (depPath d)) (allDeps cfg)
         check (and locals) "local dependencies" "a path: dependency of miso.yml does not exist"
-        when (any ((/= Nothing) . depGit) (cfgDeps cfg)) $
+        when (any ((/= Nothing) . depGit) (allDeps cfg)) $
           check hasGit "git (git dependencies)" "install git"
 
   n <- readIORef problems

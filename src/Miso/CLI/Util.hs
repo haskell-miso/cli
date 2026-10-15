@@ -10,6 +10,7 @@ module Miso.CLI.Util
   , tryRun
   , readCommand
   , runSelf
+  , captureSelf
   , tryRunSelf
   , have
   , parent
@@ -88,6 +89,19 @@ runSelf :: String -> IO ()
 runSelf as = do
   exe <- self
   run (quote exe ++ " " ++ as)
+
+-- | Run ourselves with the arguments; did it work, and what it printed
+-- (stdout and stderr).
+captureSelf :: String -> IO (Bool, String)
+captureSelf as = do
+  exe <- self
+  tmp <- getTemporaryDirectory
+  (f, h) <- openTempFile tmp "miso.out"
+  hClose h
+  ok <- tryRun (quote exe ++ " " ++ as ++ " > " ++ quote (map (\x -> if x == '\\' then '/' else x) f) ++ " 2>&1")
+  s <- readFile' f
+  removeFile f
+  pure (ok, s)
 
 tryRunSelf :: String -> IO Bool
 tryRunSelf as = do
