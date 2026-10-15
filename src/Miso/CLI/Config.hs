@@ -321,7 +321,7 @@ toConfig (Map kvs) = do
   checkVersion ver
   opts <- maybe (Right []) strs (lookup "mhs-options" kvs)
   deps <- maybe (Right []) depsOf (lookup "dependencies" kvs)
-  mapM_ (known "" (["name", "version", "mhs-options", "dependencies", "library", "executables", "tests"] ++ flatKeys)) (map fst kvs)
+  mapM_ (known "" (["name", "version", "synopsis", "mhs-options", "dependencies", "library", "executables", "tests"] ++ flatKeys)) (map fst kvs)
   lib <- maybe (Right Nothing) (fmap Just . library) (lookup "library" kvs)
   let flat = [ k | (k, _) <- kvs, k `elem` flatKeys ]
       hasLib = maybe False (const True) lib

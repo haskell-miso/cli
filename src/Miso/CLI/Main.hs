@@ -22,6 +22,7 @@ import Miso.CLI.Build
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Deps
+import Miso.CLI.Docs (docs)
 import Miso.CLI.Doctor (doctor)
 import Miso.CLI.Serve (dev, serve, watch)
 import Miso.CLI.Templates (templateNames, templates)
@@ -61,6 +62,7 @@ main' = do
     ["watch"]          -> withConfig (watch Nothing)
     ["watch", n]       -> withConfig (watch (Just n))
     "serve" : as       -> port as >>= serve
+    "docs" : as        -> withConfig (docs as)
     ["clean"]          -> clean
     "lint" : as        -> withConfig (lint as)
     ["repl"]           -> repl
@@ -102,6 +104,7 @@ usage = do
     , cmd "watch [NAME]" "type check on every change, and show the first error"
     , cmd "lint [ARGS]" "run hlint on the project's sources (.hlint.yaml configures it)"
     , cmd "repl" "mhs, interactively, with the project's sources"
+    , cmd "docs [--out DIR]" "a documentation site for the library, in docs/"
     , cmd "clean" "remove what builds make (dist/, public/, caches)"
     ]
   ds <- sequence

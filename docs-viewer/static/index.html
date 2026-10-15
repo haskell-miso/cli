@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>%TITLE%</title>
+    <meta name="generator" content="miso docs">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23141210'/%3E%3Cg transform='translate(3.6 3.6) scale(0.7)'%3E%3Cpolygon points='0.93,21.65 6.37,21.65 12.25,13.6 9.3,10.1' fill='none' stroke='white' stroke-width='0.7'/%3E%3Cpolygon points='1.5,2 7.8,2 22.5,22 16.2,22' fill='white'/%3E%3C/g%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+    <link rel="stylesheet" href="docs.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+    <script>
+      // The data of data/: each file is a script that calls misoDocsData, so
+      // it loads from file:// too.  misoDocsLoad loads a module's file once.
+      window.misoDocs = { data: {}, waiting: {} };
+      window.misoDocsData = function (name, value) {
+        var json = JSON.stringify(value);
+        misoDocs.data[name] = json;
+        var ks = misoDocs.waiting[name] || [];
+        delete misoDocs.waiting[name];
+        ks.forEach(function (k) { k(json); });
+      };
+      window.misoDocsLoad = function (name, k) {
+        if (name in misoDocs.data) { setTimeout(function () { k(misoDocs.data[name]); }, 0); return; }
+        var ks = misoDocs.waiting[name] = misoDocs.waiting[name] || [];
+        ks.push(k);
+        if (ks.length > 1) return;
+        var s = document.createElement("script");
+        s.src = "data/" + name + ".js";
+        s.onerror = function () {
+          var ks = misoDocs.waiting[name] || [];
+          delete misoDocs.waiting[name];
+          ks.forEach(function (k) { k(null); });
+        };
+        document.head.appendChild(s);
+      };
+    </script>
+    <script src="data/index.js"></script>
+  </head>
+  <body>
+    <div class="loading"><span class="loading-mark">λ</span></div>
+    <script>
+      // Scroll to what the hash names once miso has drawn it, and open the
+      // search palette on "/" or Ctrl-K / Cmd-K.
+      (function () {
+        function target() {
+          var h = decodeURIComponent(location.hash.replace(/^#/, ""));
+          var parts = h.split("/").filter(function (p) { return p.length; });
+          return parts.length > 1 ? "/" + parts.join("/") : null;
+        }
+        var token = 0;
+        function scroll() {
+          var id = target(), mine = ++token, tries = 0;
+          if (!id) { window.scrollTo(0, 0); return; }
+          (function look() {
+            if (mine !== token) return;
+            var el = document.getElementById(id);
+            if (el) {
+              el.scrollIntoView({ block: "start" });
+              el.classList.remove("flash");
+              void el.offsetWidth;
+              el.classList.add("flash");
+            } else if (tries++ < 60) {
+              requestAnimationFrame(look);
+            }
+          })();
+        }
+        window.addEventListener("hashchange", scroll);
+        window.addEventListener("load", scroll);
+        // a module page is drawn when its data is loaded: scroll then too
+        var drawn = null;
+        new MutationObserver(function () {
+          var mod = document.querySelector(".module-title");
+          var now = mod && !document.querySelector(".skeleton") ? location.hash : null;
+          if (now && now !== drawn) { drawn = now; scroll(); }
+          // the palette's input, when it opens
+          var pi = document.getElementById("palette-input");
+          if (pi && !pi.hasAttribute("data-focused")) { pi.setAttribute("data-focused", ""); pi.focus(); }
+          document.body.classList.toggle("palette-open", !!pi);
+          var sel = document.querySelector(".palette-row.selected");
+          if (sel && sel !== window.misoDocsSelected) { window.misoDocsSelected = sel; sel.scrollIntoView({ block: "nearest" }); }
+          // math, with KaTeX (when it has loaded)
+          if (window.katex) {
+            document.querySelectorAll(".math:not([data-done])").forEach(function (el) {
+              el.setAttribute("data-done", "");
+              try {
+                katex.render(el.getAttribute("data-tex"), el, { displayMode: el.classList.contains("display"), throwOnError: false });
+              } catch (e) {}
+            });
+          }
+        }).observe(document.body, { childList: true, subtree: true });
+        window.misoDocsGo = function (h) { location.hash = h; };
+        // The palette (a miso component) opens on this event.
+        window.misoDocsOpenPalette = function () { window.dispatchEvent(new Event("misodocs:palette")); };
+        // Search, for the palette: the modules, then the names, the best
+        // first; a line for each, its fields (name, kind, module, link)
+        // separated by tabs.
+        var ix = null;
+        window.misoDocsSearch = function (query) {
+          var q = String(query || "").trim().toLowerCase(), out = [];
+          if (!q) return "";
+          if (!ix) ix = JSON.parse(misoDocs.data.index);
+          ix.modules.filter(function (m) { return !m.hidden && m.n.toLowerCase().indexOf(q) >= 0; }).slice(0, 6)
+            .forEach(function (m) { out.push([m.n, "module", "", "#/" + m.n].join("\t")); });
+          ix.defs.filter(function (d) { return d[0].toLowerCase().indexOf(q) >= 0; })
+            .map(function (d) { var l = d[0].toLowerCase(); return [l === q ? 0 : 1, l.indexOf(q) === 0 ? 0 : 1, d[0].length, d]; })
+            .sort(function (a, b) { return a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || (a[3][0] < b[3][0] ? -1 : 1); })
+            .slice(0, 40)
+            .forEach(function (r) { var d = r[3]; out.push([d[0], d[1], d[2], "#/" + d[2] + "/" + d[3]].join("\t")); });
+          return out.join("\n");
+        };
+        document.addEventListener("keydown", function (e) {
+          var typing = /^(INPUT|TEXTAREA)$/.test((document.activeElement || {}).tagName || "");
+          var open = (e.key === "/" && !typing) || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k");
+          if (open && !document.getElementById("palette-input")) { e.preventDefault(); misoDocsOpenPalette(); }
+        });
+      })();
+    </script>
+    <script src="index.js"></script>
+  </body>
+</html>

@@ -1,0 +1,6 @@
+name: edge
+version: 0.1.0
+synopsis: Unusual Haskell, to test miso docs against.
+library:
+  source-dirs: [src]
+  exposed-modules: [Edge, Edge.Internal, Edge.Pruned, Edge.TH]

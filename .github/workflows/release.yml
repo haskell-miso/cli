@@ -41,6 +41,23 @@ jobs:
           name: miso-${{ matrix.system }}
           path: result/*
 
+  # miso docs on the examples, with the x86_64-linux build (the viewer needs
+  # emcc, which the smoke tests do not have)
+  docs:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: miso-x86_64-linux
+          path: dist
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 6.0.12
+      - name: miso docs
+        run: scripts/docs-test.sh dist/miso-x86_64-linux.tar.gz
+
   build-intel-mac:
     # GitHub retired the macos-13 image (jobs wait for it forever);
     # macos-15-intel is the free Intel runner.
