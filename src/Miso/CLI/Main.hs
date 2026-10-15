@@ -56,6 +56,7 @@ main' = do
     ["templates"]      -> listTemplates
     "build" : as       -> withConfig (build ("--dev" `elem` as) (filter (/= "--dev") as))
     "run" : as         -> withConfig (runProgram as)
+    "test" : as        -> withConfig (test as)
     "dev" : as         -> let (n, as') = named as in port as' >>= \p -> withConfig (dev p n)
     ["watch"]          -> withConfig (watch Nothing)
     ["watch", n]       -> withConfig (watch (Just n))
@@ -95,6 +96,7 @@ usage = do
     [ cmd "new NAME [--template T]" "make a new project (miso templates lists them)"
     , cmd "build [NAME...]" "build the project of miso.yml (or the programs named)"
     , cmd "run [NAME] [ARGS]" "build and run a program (target: native)"
+    , cmd "test [NAME...] [-- ARGS]" "build and run the tests (or those named)"
     , cmd "dev [NAME] [--port N]" "serve a program, rebuild on changes, and reload the page"
     , cmd "serve [--port N]" "serve public/"
     , cmd "watch [NAME]" "type check on every change, and show the first error"
@@ -192,6 +194,31 @@ runProgram as cfg = do
   r <- runExitCode (unwords (map quote (("./" ++ out) : dropDashes args)))
   exitWith r
   where dropDashes xs = case xs of { "--" : r -> r; _ -> xs }
+
+-- | miso test [NAME...] [-- ARGS]: build the tests of miso.yml (or those
+-- named) and run each, with ARGS.  A test passes when it exits with 0.
+-- Every test runs, and miso test fails when one of them did.
+test :: [String] -> Config -> IO ()
+test as cfg = do
+  let (names, rest) = break (== "--") as
+      args = drop 1 rest
+  when (null (cfgTests cfg)) $
+    failWith "miso.yml has no tests (a tests: section, like executables:, of programs that exit with 0 when they pass)"
+  ts <- if null names then pure (cfgTests cfg) else mapM (either failWith pure . findTest cfg) names
+  installDeps cfg
+  outs <- mapM (buildProgram False cfg) ts
+  results <- forM (zip ts outs) $ \(t, out) -> do
+    info ("Running " ++ exeName t)
+    r <- runExitCode (unwords (map quote (("./" ++ out) : args)))
+    case r of
+      ExitSuccess -> success (exeName t ++ " passed")
+      ExitFailure n -> warn (exeName t ++ " failed (exit code " ++ show n ++ ")")
+    pure (exeName t, r == ExitSuccess)
+  let failed = [ n | (n, False) <- results ]
+      count n = show n ++ " test" ++ (if n == 1 then "" else "s")
+  if null failed
+    then success (count (length results) ++ " passed")
+    else failWith (show (length failed) ++ " of " ++ count (length results) ++ " failed: " ++ intercalate ", " failed)
 
 clean :: IO ()
 clean = do

@@ -213,14 +213,14 @@ watchedFor cfg exes = nub' $
 -----------------------------------------------------------------------------
 -- miso watch
 
--- | Type check the library and the programs (or the one named) whenever
+-- | Type check the library, the programs and the tests (or the one named) whenever
 -- they change, and show the first error, as ghcid does: mhs -fno-code
 -- takes under a second, where a build takes many (emcc).
 watch :: Maybe String -> Config -> IO ()
 watch mname cfg = do
   exes <- case mname of
-    Just n -> (: []) <$> either failWith pure (findProgram cfg n)
-    Nothing -> pure (cfgExecutables cfg)
+    Just n -> (: []) <$> either failWith pure (either (const (findTest cfg n)) Right (findProgram cfg n))
+    Nothing -> pure (cfgExecutables cfg ++ cfgTests cfg)
   installDeps cfg
   tty <- isTerminal
   let paths = filter (/= ".") (watchedFor cfg exes)

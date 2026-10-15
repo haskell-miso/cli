@@ -29,6 +29,29 @@ miso update
 grep -q '^    hackage: ' miso.lock || { echo "smoke test: miso update did not lock split" >&2; cat miso.lock >&2; exit 1; }
 out=$(miso run | tail -1 | tr -d '\r')
 [ "$out" = hello ] || { echo "smoke test: expected hello with miso.lock, got: $out" >&2; exit 1; }
+# miso test: a test that passes and one that fails
+cat >> miso.yml <<'YML'
+tests:
+  pass:
+    main: Pass
+  fail:
+    main: Fail
+YML
+mkdir -p test
+cat > test/Pass.hs <<'HS'
+module Pass(main) where
+main :: IO ()
+main = putStrLn "pass"
+HS
+cat > test/Fail.hs <<'HS'
+module Fail(main) where
+import System.Exit
+main :: IO ()
+main = exitWith (ExitFailure 3)
+HS
+miso test pass
+if miso test > test.log 2>&1; then echo "smoke test: miso test passed with a failing test" >&2; cat test.log >&2; exit 1; fi
+grep -q "1 of 2 tests failed: fail" test.log || { echo "smoke test: miso test did not report the failing test" >&2; cat test.log >&2; exit 1; }
 miso doctor
 miso list
 # serve: a page from public/

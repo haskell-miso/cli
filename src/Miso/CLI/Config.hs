@@ -35,6 +35,15 @@
 -- The library and each program may also have dependencies and
 -- mhs-options, added to the project's.
 --
+-- Tests are programs for this machine that miso test builds and runs; a
+-- test passes when it exits with 0.  They can import the library's modules.
+--
+-- > tests:
+-- >   spec:                    # miso test spec
+-- >     main: Spec
+-- >     source-dirs: [test]    # default [test]
+-- >     dependencies: [split]
+--
 -- miso itself, and base, containers, mtl, ... come installed with the tool.
 --
 -- Only the part of YAML these files need is supported: mappings, lists
@@ -52,6 +61,7 @@ module Miso.CLI.Config
   , webDir
   , allSourceDirs
   , findProgram
+  , findTest
   , noProgram
   , readConfig
   , parseConfig
@@ -78,6 +88,7 @@ data Config = Config
   , cfgDeps        :: [Dep]         -- ^ the top-level list, which miso add edits
   , cfgLibrary     :: Maybe Library
   , cfgExecutables :: [Executable]  -- ^ in the order of miso.yml
+  , cfgTests       :: [Executable]  -- ^ native programs that miso test runs
   } deriving (Show)
 
 data Library = Library
@@ -130,7 +141,7 @@ isNative e = maybe True (== "native") (exeTarget e)
 
 -- | The dependencies of the project and of all its components.
 allDeps :: Config -> [Dep]
-allDeps cfg = nubOn depName (cfgDeps cfg ++ maybe [] libDeps (cfgLibrary cfg) ++ concatMap exeDeps (cfgExecutables cfg))
+allDeps cfg = nubOn depName (cfgDeps cfg ++ maybe [] libDeps (cfgLibrary cfg) ++ concatMap exeDeps (cfgExecutables cfg ++ cfgTests cfg))
 
 -- | Where mhs looks for a program's modules: the library's, then its own.
 programDirs :: Config -> Executable -> [FilePath]
@@ -147,15 +158,24 @@ webDir cfg e
   | length (filter (not . isNative) (cfgExecutables cfg)) > 1 = "public/" ++ exeName e
   | otherwise = "public"
 
--- | The source dirs of every component.
+-- | The source dirs of every component, the tests too.
 allSourceDirs :: Config -> [FilePath]
-allSourceDirs cfg = nubOn id (maybe [] libSourceDirs (cfgLibrary cfg) ++ concatMap exeSourceDirs (cfgExecutables cfg))
+allSourceDirs cfg = nubOn id (maybe [] libSourceDirs (cfgLibrary cfg) ++ concatMap exeSourceDirs (cfgExecutables cfg ++ cfgTests cfg))
 
 findProgram :: Config -> String -> Either String Executable
 findProgram cfg n =
   case [ e | e <- cfgExecutables cfg, exeName e == n ] of
     e : _ -> Right e
     [] -> Left (noProgram cfg ("no program " ++ n ++ " in miso.yml"))
+
+findTest :: Config -> String -> Either String Executable
+findTest cfg n =
+  case [ t | t <- cfgTests cfg, exeName t == n ] of
+    t : _ -> Right t
+    [] -> Left ("no test " ++ n ++ " in miso.yml" ++
+                case map exeName (cfgTests cfg) of
+                  [] -> " (it has no tests: section)"
+                  ns -> " (its tests: " ++ intercalate ", " ns ++ ")")
 
 -- | A message that there is no such program, with the ones there are.
 noProgram :: Config -> String -> String
@@ -301,7 +321,7 @@ toConfig (Map kvs) = do
   checkVersion ver
   opts <- maybe (Right []) strs (lookup "mhs-options" kvs)
   deps <- maybe (Right []) depsOf (lookup "dependencies" kvs)
-  mapM_ (known "" (["name", "version", "mhs-options", "dependencies", "library", "executables"] ++ flatKeys)) (map fst kvs)
+  mapM_ (known "" (["name", "version", "mhs-options", "dependencies", "library", "executables", "tests"] ++ flatKeys)) (map fst kvs)
   lib <- maybe (Right Nothing) (fmap Just . library) (lookup "library" kvs)
   let flat = [ k | (k, _) <- kvs, k `elem` flatKeys ]
       hasLib = maybe False (const True) lib
@@ -310,8 +330,13 @@ toConfig (Map kvs) = do
            | otherwise -> executables v
     Nothing | hasLib && null flat -> Right []
             | otherwise -> (: []) <$> executable name (Map [ kv | kv@(k, _) <- kvs, k `elem` flatKeys ])
-  let cfg = Config name ver opts deps lib exes
-  checkSources (cfgDeps cfg ++ maybe [] libDeps lib ++ concatMap exeDeps exes)
+  ts <- maybe (Right []) tests (lookup "tests" kvs)
+  -- both are built to dist/NAME
+  case [ exeName t | t <- ts, exeName t `elem` map exeName exes ] of
+    n : _ -> Left ("miso.yml: " ++ n ++ " is both a program and a test; give them different names")
+    [] -> Right ()
+  let cfg = Config name ver opts deps lib exes ts
+  checkSources (cfgDeps cfg ++ maybe [] libDeps lib ++ concatMap exeDeps (exes ++ ts))
   Right cfg
   where
     flatKeys = ["main", "source-dirs", "target", "static-dir"] ++ nativeFields
@@ -334,17 +359,31 @@ executables (Map kvs) = do
 executables v = Left ("miso.yml: executables should be names with their fields (web: ...), found " ++ show v)
 
 executable :: String -> Value -> Either String Executable
-executable n (Map kvs) = do
-  when' (not (validName n)) (Left ("miso.yml: " ++ n ++ " is not a name for a program (a letter, then letters, digits and -)"))
-  mapM_ (known ("executables." ++ n) (["main", "source-dirs", "target", "mhs-options", "dependencies", "static-dir"] ++ nativeFields)) (map fst kvs)
+executable n v = component "executables" ["app"] n v
+
+tests :: Value -> Either String [Executable]
+tests (Map kvs) = do
+  when' (null kvs) (Left "miso.yml: tests: has none (a name, then its main: and source-dirs:)")
+  mapM (\(n, v) -> component "tests" ["test"] n v) kvs
+tests v = Left ("miso.yml: tests should be names with their fields (spec: ...), found " ++ show v)
+
+-- | A program of executables:, or a test of tests: (which runs on this
+-- machine, so it has no target or static dir), with its default source dirs.
+component :: String -> [FilePath] -> String -> Value -> Either String Executable
+component section dirs n (Map kvs) = do
+  let isTest = section == "tests"
+  when' (not (validName n)) (Left ("miso.yml: " ++ n ++ " is not a name for a " ++ (if isTest then "test" else "program") ++ " (a letter, then letters, digits and -)"))
+  when' (isTest && any (`elem` ["target", "static-dir"]) (map fst kvs))
+    (Left ("miso.yml: tests." ++ n ++ ": a test runs on this machine, so it has no target or static-dir"))
+  mapM_ (known (section ++ "." ++ n) (["main", "source-dirs", "target", "mhs-options", "dependencies", "static-dir"] ++ nativeFields)) (map fst kvs)
   Executable n <$> maybe (Right "Main") str (lookup "main" kvs)
-               <*> maybe (Right ["app"]) strs (lookup "source-dirs" kvs)
+               <*> maybe (Right dirs) strs (lookup "source-dirs" kvs)
                <*> maybe (Right Nothing) (fmap Just . str) (lookup "target" kvs)
                <*> maybe (Right []) strs (lookup "mhs-options" kvs)
                <*> maybe (Right []) depsOf (lookup "dependencies" kvs)
                <*> native kvs
                <*> maybe (Right "static") str (lookup "static-dir" kvs)
-executable n v = Left ("miso.yml: executables." ++ n ++ " should have fields (main: ...), found " ++ show v)
+component section _ n v = Left ("miso.yml: " ++ section ++ "." ++ n ++ " should have fields (main: ...), found " ++ show v)
 
 known :: String -> [String] -> String -> Either String ()
 known section ks k

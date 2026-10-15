@@ -22,9 +22,10 @@ miso build            # public/index.js (target: browser)
 | `miso new NAME [--template T]` | a new project; `miso templates` lists the templates (counter, router, canvas) |
 | `miso build [NAME...]` | install missing dependencies, and build the project of `miso.yml` (or the programs named) |
 | `miso run [NAME] [ARGS]` | build and run a program (`target: native`; the first one, or NAME) |
+| `miso test [NAME...] [-- ARGS]` | build the tests of `miso.yml` (or those named) and run each, with ARGS; it fails when a test does |
 | `miso dev [NAME] [--port N]` | build a browser program (the first one, or NAME), serve `public/`, and on a change of the sources rebuild and reload the page |
 | `miso serve [--port N]` | serve `public/` (on the first free port from 8000, or N) |
-| `miso watch [NAME]` | type check the library and the programs (or NAME) on every change, and show the first error, as ghcid does |
+| `miso watch [NAME]` | type check the library, the programs and the tests (or NAME) on every change, and show the first error, as ghcid does |
 | `miso lint [ARGS]` | run [hlint](https://github.com/ndmitchell/hlint) on the source dirs of `miso.yml`, with ARGS; it reads `.hlint.yaml` |
 | `miso repl` | mhs, interactively, with the project's sources and packages |
 | `miso clean` | remove `dist/`, `public/`, and the caches |
@@ -103,6 +104,24 @@ executables:
 - The top-level `main`, `source-dirs` and `target` (and the fields below)
   cannot be used with `executables:`.  A project with just `library:` is a library: `miso build`
   checks it, and there is nothing to run.
+
+Tests are programs that run on this machine, and pass when they exit with 0
+(as Cabal's `exitcode-stdio` tests):
+
+```yaml
+tests:
+  spec:                    # miso test spec
+    main: Spec
+    source-dirs: [test]    # default [test]
+    dependencies: [split]  # added to the project's
+```
+
+- `miso test` builds every test to `dist/NAME`, runs each (with the
+  arguments after `--`), and fails when one of them fails; all of them run.
+  `miso build` does not build the tests.
+- A test can import the library's modules, has no `target` or `static-dir`,
+  and takes `mhs-options` and the fields below, as a program does.  A test
+  and a program cannot have the same name.
 
 The library, each program, and a project with one program also take:
 
