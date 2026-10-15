@@ -79,6 +79,8 @@
           var pi = document.getElementById("palette-input");
           if (pi && !pi.hasAttribute("data-focused")) { pi.setAttribute("data-focused", ""); pi.focus(); }
           document.body.classList.toggle("palette-open", !!pi);
+          var sel = document.querySelector(".palette-row.selected");
+          if (sel && sel !== window.misoDocsSelected) { window.misoDocsSelected = sel; sel.scrollIntoView({ block: "nearest" }); }
           // math, with KaTeX (when it has loaded)
           if (window.katex) {
             document.querySelectorAll(".math:not([data-done])").forEach(function (el) {

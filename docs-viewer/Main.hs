@@ -68,7 +68,12 @@ main = do
   raw <- getData "index"
   case maybe (Left "no data/index.js") eitherDecode raw of
     Left e -> startApp defaultEvents (component () (\_ -> pure ()) (\_ -> broken e))
-    Right ix -> startApp defaultEvents (app ix (Model (routeOf h) "" System False M.empty [] False 0))
+    Right ix -> startApp events (app ix (Model (routeOf h) "" System False M.empty [] False 0))
+
+-- | The events the page listens for: the palette needs keydown (its
+-- arrows) and mouseenter, which are not among the default ones.
+events :: Events
+events = defaultEvents <> keyboardEvents <> mouseEvents
 
 -- | The page when the data cannot be read.
 broken :: MisoString -> View context props () action
