@@ -6,9 +6,10 @@ module Miso.CLI.Main (main) where
 
 import Control.Exception (AsyncException (..), catch, throwIO)
 import Control.Monad (filterM, forM, forM_, unless, when)
+import Data.Char (isAlpha, isAlphaNum, isDigit)
 import Data.List (intercalate)
 import Foreign.C.Types (CInt (..))
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getTemporaryDirectory, listDirectory, removeFile)
 import System.Environment (getArgs, lookupEnv, withArgs)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (hFlush, stderr, stdout)
@@ -24,7 +25,7 @@ import Miso.CLI.Config
 import Miso.CLI.Deps
 import Miso.CLI.Doctor (doctor)
 import Miso.CLI.Serve (dev, serve, watch)
-import Miso.CLI.Templates (templateNames, templates)
+import Miso.CLI.Templates (licenseText, templateNames, templates)
 import Miso.CLI.Util
 
 -- Exit with the code of an ExitCode exception (from mhs, mcabal, or us);
@@ -53,6 +54,7 @@ main' = do
     ["new", name, "--template", t] -> new t name
     ["new", "--template", t, name] -> new t name
     "new" : _          -> failWith "usage: miso new NAME [--template T] (miso templates lists the templates)"
+    "init" : as        -> initProject as
     ["templates"]      -> listTemplates
     "build" : as       -> withConfig (build ("--dev" `elem` as) (filter (/= "--dev") as))
     "run" : as         -> withConfig (runProgram as)
@@ -94,6 +96,7 @@ usage = do
   tool <- section "The tool"
   ls <- sequence
     [ cmd "new NAME [--template T]" "make a new project (miso templates lists them)"
+    , cmd "init" "make this directory a project (asks for its name, license, ...)"
     , cmd "build [NAME...]" "build the project of miso.yml (or the programs named)"
     , cmd "run [NAME] [ARGS]" "build and run a program (target: native)"
     , cmd "test [NAME...] [-- ARGS]" "build and run the tests (or those named)"
@@ -289,6 +292,97 @@ new template name = do
     writeFile file contents
     step file
   success ("Created " ++ name ++ ": cd " ++ name ++ " && miso dev")
+
+-- | miso init: make the current directory a project, from a template,
+-- keeping the files that are already there (a .gitignore gets the lines it
+-- lacks).  On a terminal it asks for the name, version, synopsis, author,
+-- license and template, one at a time, each with a default; the flags
+-- answer them, and --yes (or input that is not a terminal) takes the
+-- defaults.
+initProject :: [String] -> IO ()
+initProject as = do
+  opts <- maybe (failWith initUsage) pure (options as)
+  here <- doesFileExist configFile
+  when here $ failWith (configFile ++ " is already here: this is a miso project")
+  dir <- getCurrentDirectory
+  tty <- isInputTerminal
+  gitName <- maybe "" trimLine <$> readCommand "git config user.name"
+  gitEmail <- maybe "" trimLine <$> readCommand "git config user.email"
+  let interactive = tty && "--yes" `notElem` map fst opts
+      given k = lookup k opts
+      ask k question dflt ok why =
+        case given k of
+          Just v -> if ok v then pure v else failWith (k ++ " " ++ v ++ ": " ++ why)
+          Nothing | not interactive -> if ok dflt then pure dflt
+                                       else failWith (question ++ " " ++ show dflt ++ ": " ++ why ++ "; give " ++ k)
+                  | otherwise -> loop
+        where
+          loop = do
+            putStr (question ++ (if null dflt then "" else " [" ++ dflt ++ "]") ++ ": ")
+            hFlush stdout
+            answer <- (Just . trimLine <$> getLine) `catch` endOfInput
+            let v = case answer of { Just a | not (null a) -> a; _ -> dflt }
+            case answer of
+              _ | ok v -> pure v
+              Nothing -> failWith ("no " ++ question ++ " (" ++ why ++ "): give " ++ k)
+              Just _ -> putStrLn ("  " ++ why) >> loop
+          endOfInput :: IOError -> IO (Maybe String)
+          endOfInput _ = pure Nothing
+      author0 = case (gitName, gitEmail) of
+                  ("", e) -> e
+                  (n, e) | null e || n == e -> n
+                         | otherwise -> n ++ " <" ++ e ++ ">"
+  name <- ask "--name" "name" (lastPart dir) packageName "a letter, then letters, digits and -"
+  ver <- ask "--version" "version" "0.1.0" versionLike "numbers separated by dots, like 0.1.0"
+  synopsis <- ask "--synopsis" "synopsis" "" (const True) ""
+  author <- ask "--author" "author" author0 (const True) ""
+  license <- ask "--license" "license (an SPDX id, or none)" "BSD-3-Clause" (not . null) "a license id, e.g. BSD-3-Clause, MIT, Apache-2.0; or none"
+  template <- ask "--template" ("template (" ++ intercalate ", " (map fst templateNames) ++ ")") "counter"
+                (`elem` map fst templateNames) ("one of " ++ unwords (map fst templateNames))
+  files0 <- maybe (failWith ("no template " ++ template)) pure (templates template name)
+  year <- maybe "" trimLine <$> readCommand "date +%Y"
+  let fields = [ "synopsis: " ++ synopsis | not (null synopsis) ]
+            ++ [ "author: " ++ author | not (null author) ]
+            ++ [ "license: " ++ license | license /= "none" ]
+      yml contents = unlines (concatMap (\l -> if l == "version: 0.1.0" then ("version: " ++ ver) : fields else [l]) (lines contents))
+      files = [ (p, if p == configFile then yml c else c) | (p, c) <- files0 ]
+           ++ [ ("LICENSE", t) | Just t <- [licenseText license year author] ]
+  when interactive $ putStrLn ""
+  info ("Initializing " ++ name ++ " (" ++ template ++ ") in " ++ dir)
+  forM_ files $ \(path, contents) -> do
+    there <- doesFileExist path
+    if not there
+      then do
+        unless (null (parent path)) $ createDirectoryIfMissing True (parent path)
+        writeFile path contents
+        step path
+      else if path == ".gitignore"
+        then do
+          old <- readFile' path
+          let missing = [ l | l <- lines contents, l `notElem` lines old ]
+          if null missing
+            then step (path ++ " (kept)")
+            else do
+              appendFile path ((if null old || last old == '\n' then "" else "\n") ++ unlines missing)
+              step (path ++ " (added " ++ unwords missing ++ ")")
+        else step (path ++ " (kept: it is already here)")
+  success ("Initialized " ++ name ++ ": miso dev")
+  where
+    initUsage = "usage: miso init [--name NAME] [--version V] [--synopsis S] [--author A] [--license L] [--template T] [--yes]"
+    options [] = Just []
+    options ("--yes" : rest) = (("--yes", "") :) <$> options rest
+    options (k : v : rest)
+      | k `elem` ["--name", "--version", "--synopsis", "--author", "--license", "--template"] = ((k, v) :) <$> options rest
+    options _ = Nothing
+    lastPart = reverse . takeWhile (`notElem` "/\\") . reverse
+    trimLine = reverse . dropWhile (`elem` " \t\r\n") . reverse . dropWhile (`elem` " \t")
+    packageName n = case n of
+      c : cs -> isAlpha c && all (\x -> isAlphaNum x || x == '-') cs
+      [] -> False
+    versionLike v = not (null v) && all (\p -> not (null p) && all isDigit p) (splitDots v)
+    splitDots v = case break (== '.') v of
+      (x, _ : r) -> x : splitDots r
+      (x, []) -> [x]
 
 listTemplates :: IO ()
 listTemplates = do

@@ -20,6 +20,7 @@ miso build            # public/index.js (target: browser)
 | command | |
 |---|---|
 | `miso new NAME [--template T]` | a new project; `miso templates` lists the templates (counter, router, canvas) |
+| `miso init` | make the current directory a project. On a terminal it asks for the name (default: the directory's), version, synopsis, author (from git), license and template, one at a time; `--name`, `--version`, `--synopsis`, `--author`, `--license` and `--template` answer them, and `--yes` takes the defaults. It writes the template's files that are not there yet (a `.gitignore` gets the lines it lacks), and a `LICENSE` for BSD-3-Clause, BSD-2-Clause and MIT |
 | `miso build [NAME...]` | install missing dependencies, and build the project of `miso.yml` (or the programs named) |
 | `miso run [NAME] [ARGS]` | build and run a program (`target: native`; the first one, or NAME) |
 | `miso test [NAME...] [-- ARGS]` | build the tests of `miso.yml` (or those named) and run each, with ARGS; it fails when a test does |
@@ -59,6 +60,9 @@ keeps the last one.
 ```yaml
 name: counter
 version: 0.1.0             # required: numbers separated by dots
+synopsis: A counter        # optional: one line about the package
+author: Ada <ada@example.org>   # optional
+license: BSD-3-Clause      # optional: an SPDX id
 main: Main                 # the main module (default Main)
 source-dirs: [app]         # default [app]
 target: browser            # browser (WebAssembly, needs emcc), browser_js, or native

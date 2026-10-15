@@ -89,6 +89,9 @@ data Config = Config
   , cfgLibrary     :: Maybe Library
   , cfgExecutables :: [Executable]  -- ^ in the order of miso.yml
   , cfgTests       :: [Executable]  -- ^ native programs that miso test runs
+  , cfgSynopsis    :: Maybe String  -- ^ one line about the package
+  , cfgAuthor      :: Maybe String
+  , cfgLicense     :: Maybe String  -- ^ an SPDX id, e.g. BSD-3-Clause
   } deriving (Show)
 
 data Library = Library
@@ -321,7 +324,10 @@ toConfig (Map kvs) = do
   checkVersion ver
   opts <- maybe (Right []) strs (lookup "mhs-options" kvs)
   deps <- maybe (Right []) depsOf (lookup "dependencies" kvs)
-  mapM_ (known "" (["name", "version", "mhs-options", "dependencies", "library", "executables", "tests"] ++ flatKeys)) (map fst kvs)
+  mapM_ (known "" (["name", "version", "synopsis", "author", "license", "mhs-options", "dependencies", "library", "executables", "tests"] ++ flatKeys)) (map fst kvs)
+  synopsis <- maybe (Right Nothing) (fmap Just . str) (lookup "synopsis" kvs)
+  author <- maybe (Right Nothing) (fmap Just . str) (lookup "author" kvs)
+  license <- maybe (Right Nothing) (fmap Just . str) (lookup "license" kvs)
   lib <- maybe (Right Nothing) (fmap Just . library) (lookup "library" kvs)
   let flat = [ k | (k, _) <- kvs, k `elem` flatKeys ]
       hasLib = maybe False (const True) lib
@@ -335,7 +341,7 @@ toConfig (Map kvs) = do
   case [ exeName t | t <- ts, exeName t `elem` map exeName exes ] of
     n : _ -> Left ("miso.yml: " ++ n ++ " is both a program and a test; give them different names")
     [] -> Right ()
-  let cfg = Config name ver opts deps lib exes ts
+  let cfg = Config name ver opts deps lib exes ts synopsis author license
   checkSources (cfgDeps cfg ++ maybe [] libDeps lib ++ concatMap exeDeps (exes ++ ts))
   Right cfg
   where
