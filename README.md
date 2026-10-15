@@ -6,7 +6,7 @@ and [MicroCabal](https://github.com/augustss/MicroCabal) inside, and miso
 and its dependencies already installed.
 
 ```sh
-curl -fsSL https://haskell-miso.org/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh | sh
 ```
 
 ```sh
@@ -25,11 +25,13 @@ miso build            # public/index.js (target: browser)
 | `miso dev [NAME] [--port N]` | build a browser program (the first one, or NAME), serve `public/`, and on a change of the sources rebuild and reload the page |
 | `miso serve [--port N]` | serve `public/` (on the first free port from 8000, or N) |
 | `miso watch [NAME]` | type check the library and the programs (or NAME) on every change, and show the first error, as ghcid does |
+| `miso lint [ARGS]` | run [hlint](https://github.com/ndmitchell/hlint) on the source dirs of `miso.yml`, with ARGS; it reads `.hlint.yaml` |
 | `miso repl` | mhs, interactively, with the project's sources and packages |
 | `miso clean` | remove `dist/`, `public/`, and the caches |
 | `miso install` | install the dependencies of `miso.yml` |
 | `miso add PKG...` / `miso remove PKG...` | edit the dependencies of `miso.yml` (keeping its comments), and install |
 | `miso list` | the installed packages: those that come with miso, and those you installed |
+| `miso lock` | write `miso.lock`: lock what is not locked yet (new or changed in `miso.yml`), keep what is |
 | `miso update` | lock the Hackage and git dependencies in `miso.lock` (newest versions, current commits), and install them |
 | `miso doctor` | check the installation and the tools miso needs, and say how to fix what is missing |
 | `miso upgrade [VERSION]` | install the latest release (or `VERSION`) in place |
@@ -135,13 +137,14 @@ again.
 
 ## miso.lock
 
-`miso update` writes `miso.lock`, next to `miso.yml`; commit it.  It has, for
-each dependency from Hackage, its newest version and the sha256 of its
-tarball, and for each git dependency the commit its `rev` (a branch, a tag,
-or a commit; HEAD without one) is at:
+`miso lock` and `miso update` write `miso.lock`, next to `miso.yml`; commit
+it.  It has, for each dependency from Hackage, a version and the sha256 of
+its tarball, and for each git dependency the commit its `rev` (a tag, a
+commit, or a branch) is at, and the version of the package there (from its
+`miso.yml`, or its `.cabal` file):
 
 ```yaml
-# miso.lock: written by miso update.  Commit it; do not edit it.
+# miso.lock: written by miso lock and miso update.  Commit it; do not edit it.
 # Local (path:) dependencies are not locked.
 miso: 0.1.0
 mhs: 0.16.10.0
@@ -153,11 +156,22 @@ packages:
     git: https://github.com/example/lens-family
     rev: v2.1.3
     commit: 8fa9e00cca7db83a3270e12943f1820dad1f2472
+    version: 2.1.3
 ```
+
+- `miso lock` locks what is not in `miso.lock` yet (a dependency added to
+  `miso.yml`, or one whose `git`/`rev` changed) at its newest version, keeps
+  the entries that still match, and drops those of dependencies that are gone.
+- `miso update` moves every dependency to the newest Hackage version and the
+  current commit of its `rev`, and installs them.
+- A git dependency needs a `rev:` (a tag, or a commit; a branch works but
+  moves).  When the `rev` is a version tag (`v2.1.3` or `2.1.3`) that is not
+  the version in the package's description, `miso lock` and `miso update`
+  warn.
 
 `miso build` and `miso install` then install exactly that: the Hackage
 tarball of that version (checked against its sha256), and the git commit,
-until the next `miso update`.  Local (`path:`) dependencies are not locked
+until the next `miso lock` or `miso update`.  Local (`path:`) dependencies are not locked
 (they are installed from the directory on every build), and neither are the
 packages that come with the tool.  A dependency that is not in `miso.lock`
 (added to `miso.yml` since, or with a different `git`/`rev`) is installed as
@@ -206,10 +220,13 @@ nix build .#tarball        # result/miso-SYSTEM.tar.gz, as released
 make MHSSRC=../MicroHs MCABALSRC=../MicroCabal
 ```
 
-Pushing a `v*` tag builds three platforms (x86_64 and aarch64 Linux,
-aarch64 macOS; the miso flake's nixpkgs no longer supports Intel Macs, which
-can build with `make` and an installed mhs) and attaches them to the release, where `install.sh` finds them.
-`install.sh` is to be served at `https://haskell-miso.org/install.sh`.  The
+Pushing a `v*` tag builds five platforms (x86_64 and aarch64 Linux and
+aarch64 macOS with nix; Intel macOS and Windows, which the miso flake's
+nixpkgs does not support, with `scripts/build-release.sh`) and attaches them
+to the release, where `install.sh` finds them.
+`install.sh` is served from this repository (`miso upgrade` downloads it from
+`https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh`, or from
+`MISO_INSTALL_URL`).  The
 release assets must be downloadable without a GitHub login, so the releases
 need a public repository.
 

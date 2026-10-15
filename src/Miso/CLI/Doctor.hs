@@ -54,6 +54,10 @@ doctor = do
   check hasCurl "curl (downloads packages)" "install curl"
   hasTar <- have "tar"
   check hasTar "tar (unpacks packages)" "install tar"
+  hasSha <- (||) <$> have "sha256sum" <*> have "shasum"
+  check hasSha "sha256sum or shasum (checks downloads against miso.lock)" "install coreutils (sha256sum) or perl (shasum)"
+  hasHlint <- have "hlint"
+  if hasHlint then ok "hlint (for miso lint)" else note "hlint is not installed (needed for miso lint)"
   hasGit <- have "git"
   if hasGit then ok "git (for git dependencies)" else note "git is not installed (needed for git dependencies)"
   when windows $ do

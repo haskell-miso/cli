@@ -8,6 +8,7 @@ module Miso.CLI.Util
   , quote
   , run
   , tryRun
+  , runExitCode
   , readCommand
   , runSelf
   , captureSelf
@@ -72,6 +73,18 @@ run :: String -> IO ()
 run c = do
   ok <- tryRun c
   when (not ok) $ failWith ("command failed: " ++ c)
+
+-- | Run a command, with its exit code.  MicroHs's system returns the wait
+-- status of the C system() (an exit code of 1 is 256), which exitWith
+-- would turn into 0; this is the exit code (or 128 + the signal).
+runExitCode :: String -> IO ExitCode
+runExitCode c = do
+  r <- system (shell c)
+  pure $ case r of
+    ExitFailure s
+      | s `mod` 256 == 0 -> ExitFailure (s `div` 256)
+      | otherwise -> ExitFailure (128 + s `mod` 128)
+    ok -> ok
 
 -- | Run a command and read what it prints; Nothing if it fails.
 readCommand :: String -> IO (Maybe String)
