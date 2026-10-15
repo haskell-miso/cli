@@ -10,12 +10,14 @@ module Miso.CLI.Build
   , modulesIn
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (filterM, forM, unless, when)
 import Data.List (intercalate, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 
 import Miso.CLI.Color
 import Miso.CLI.Config
+import Miso.CLI.Progress
 import Miso.CLI.Util
 import MicroHs.Compile (mhsVersion)
 
@@ -159,16 +161,38 @@ buildProgram devBuild cfg exe = do
   when (exeStaticDir exe /= "static" && not static) $
     failWith ("miso.yml: static-dir " ++ exeStaticDir exe ++ " does not exist")
   when (static && not nat) $ run ("cp -R " ++ quote (exeStaticDir exe) ++ "/. " ++ quote web ++ "/")
-  info ("Building " ++ cfgName cfg ++ " " ++ cfgVersion cfg ++ (if exeName exe == cfgName cfg then "" else " (" ++ exeName exe ++ ")"))
+  let what = "Building " ++ cfgName cfg ++ " " ++ cfgVersion cfg ++ (if exeName exe == cfgName cfg then "" else " (" ++ exeName exe ++ ")")
   loader <- rtsLoader
-  case loader of
-    Just js | devBuild && exeTarget exe == Just "browser" -> devComb cfg exe web js
+  took <- case loader of
+    Just js | devBuild && exeTarget exe == Just "browser" -> info what >> devComb cfg exe web js >> pure Nothing
     _ -> do
-      runSelf ("mhs " ++ unwords (map quote args))
+      took <- runMhs what args
       -- a dev build's program, which this index.js does not read
       unless nat $ run ("rm -f " ++ quote (web ++ "/app.comb"))
-  success ("Built " ++ outFile)
+      pure took
+  success ("Built " ++ outFile ++ maybe "" (" in " ++) took)
   pure outFile
+
+-- | Run mhs.  On a terminal its output goes to the build log, and the
+-- build is shown as it runs (Miso.CLI.Progress), then what mhs said
+-- (warnings, errors); how long it took.  Otherwise mhs prints as it goes (miso dev
+-- shows the log of miso build --dev this way).
+runMhs :: String -> [String] -> IO (Maybe String)
+runMhs what args = do
+  tty <- isTerminal
+  if not tty
+    then do
+      info what
+      runSelf ("mhs " ++ unwords (map quote args))
+      pure Nothing
+    else do
+      me <- self
+      (r, took) <- logged (threadDelay 100000) what buildLog
+                     (quote me ++ " mhs " ++ unwords (map quote ("-v" : filter (/= "-v") args)))
+      -- its warnings, or why it failed
+      showLog buildLog
+      when (r /= 0) $ failWith ("the build failed (" ++ took ++ ")")
+      pure (Just took)
 
 -- | The loader of the browser runtime (target browser_rts), if the
 -- installed MicroHs has it.

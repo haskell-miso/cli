@@ -21,7 +21,7 @@ miso build            # public/index.js (target: browser)
 |---|---|
 | `miso new NAME [--template T]` | a new project; `miso templates` lists the templates (counter, router, canvas) |
 | `miso init` | make the current directory a project. On a terminal it asks for the name (default: the directory's), version, synopsis, author (from git), license and template, one at a time; `--name`, `--version`, `--synopsis`, `--author`, `--license` and `--template` answer them, and `--yes` takes the defaults. It writes the template's files that are not there yet (a `.gitignore` gets the lines it lacks), and a `LICENSE` for BSD-3-Clause, BSD-2-Clause and MIT |
-| `miso build [NAME...]` | install missing dependencies, and build the project of `miso.yml` (or the programs named) |
+| `miso build [NAME...]` | install missing dependencies, and build the project of `miso.yml` (or the programs named). On a terminal it shows the last lines of the build as it runs, as `miso dev` does, and the log (`.miso-build.log`) when it fails |
 | `miso run [NAME] [ARGS]` | build and run a program (`target: native`; the first one, or NAME) |
 | `miso test [NAME...] [-- ARGS]` | build the tests of `miso.yml` (or those named) and run each, with ARGS; it fails when a test does |
 | `miso dev [NAME] [--port N]` | build a browser program (the first one, or NAME), serve `public/`, and on a change of the sources rebuild and reload the page |
