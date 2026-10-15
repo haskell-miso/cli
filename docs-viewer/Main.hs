@@ -10,7 +10,7 @@
 -- > #/M.N/ANCHOR       a declaration (or constructor, field) of a module
 -- > #/M.N/src          the source of a module
 -- > #/M.N/src/L-E      the source, with lines L to E marked
--- > #/:index           every name, A to Z
+-- > #/:index           every name, A to Z (#/:index/A at the letter A)
 --
 -- The hash is read from window.location (miso's URI parser does not take
 -- these hashes).  The script of index.html loads data files, scrolls to
@@ -149,7 +149,7 @@ routeOf :: MisoString -> Route
 routeOf h =
   case filter (not . S.null) (S.splitOn "/" (S.dropWhile (== '#') h)) of
     [] -> Home
-    [":index"] -> IndexPage
+    ":index" : _ -> IndexPage   -- #/:index/A is the index at A
     [mn] -> ModulePage mn
     [mn, "src"] -> SourcePage mn 0 0
     [mn, "src", l] -> sourceAt mn (S.unpack l)
