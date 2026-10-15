@@ -5,10 +5,10 @@
 module Miso.CLI.Main (main) where
 
 import Control.Exception (AsyncException (..), catch, throwIO)
-import Control.Monad (forM, forM_, unless, when)
+import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.List (intercalate)
 import Foreign.C.Types (CInt (..))
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeFile)
 import System.Environment (getArgs, lookupEnv, withArgs)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (hFlush, stderr, stdout)
@@ -52,6 +52,7 @@ main' = do
     ["new", name]      -> new "counter" name
     ["new", name, "--template", t] -> new t name
     ["new", "--template", t, name] -> new t name
+    "new" : _          -> failWith "usage: miso new NAME [--template T] (miso templates lists the templates)"
     ["templates"]      -> listTemplates
     "build" : as       -> withConfig (build ("--dev" `elem` as) (filter (/= "--dev") as))
     "run" : as         -> withConfig (runProgram as)
@@ -60,11 +61,13 @@ main' = do
     ["watch", n]       -> withConfig (watch (Just n))
     "serve" : as       -> port as >>= serve
     ["clean"]          -> clean
+    "lint" : as        -> withConfig (lint as)
     ["repl"]           -> repl
     ["install"]        -> withConfig installDeps
     "add" : ps@(_ : _) -> addDeps ps
     "remove" : ps@(_ : _) -> removeDeps ps
     ["list"]           -> listPackages
+    ["lock"]           -> withConfig lockDeps
     ["update"]         -> withConfig updateDeps
     ["doctor"]         -> doctor
     ["upgrade"]        -> upgrade Nothing
@@ -95,6 +98,7 @@ usage = do
     , cmd "dev [NAME] [--port N]" "serve a program, rebuild on changes, and reload the page"
     , cmd "serve [--port N]" "serve public/"
     , cmd "watch [NAME]" "type check on every change, and show the first error"
+    , cmd "lint [ARGS]" "run hlint on the project's sources (.hlint.yaml configures it)"
     , cmd "repl" "mhs, interactively, with the project's sources"
     , cmd "clean" "remove what builds make (dist/, public/, caches)"
     ]
@@ -103,6 +107,7 @@ usage = do
     , cmd "add PKG..." "add dependencies to miso.yml, and install them"
     , cmd "remove PKG..." "remove dependencies from miso.yml"
     , cmd "list" "list the installed packages"
+    , cmd "lock" "write miso.lock, keeping the versions locked already"
     , cmd "update" "lock Hackage and git dependencies in miso.lock, and install them"
     ]
   ts <- sequence
@@ -184,7 +189,7 @@ runProgram as cfg = do
   unless (isNative exe) $ failWith (exeName exe ++ " is for a browser; miso run runs native programs (miso dev serves it)")
   installDeps cfg
   out <- buildProgram False cfg exe
-  r <- system (shell (unwords (map quote (("./" ++ out) : dropDashes args))))
+  r <- runExitCode (unwords (map quote (("./" ++ out) : dropDashes args)))
   exitWith r
   where dropDashes xs = case xs of { "--" : r -> r; _ -> xs }
 
@@ -216,10 +221,33 @@ repl = do
 upgrade :: Maybe String -> IO ()
 upgrade mv = do
   home <- toolHome
-  url <- maybe "https://haskell-miso.org/install.sh" id <$> lookupEnv "MISO_INSTALL_URL"
+  url <- maybe installUrl id <$> lookupEnv "MISO_INSTALL_URL"
   info ("Upgrading miso " ++ version ++ " in " ++ home)
-  run ("curl -fsSL " ++ quote url ++ " | MISO_HOME=" ++ quote home
-       ++ maybe "" (\v -> " MISO_VERSION=" ++ quote v) mv ++ " sh")
+  -- Download the installer first: piped to sh, a failed download ran an
+  -- empty script, which succeeded, and the upgrade did nothing.
+  tmp <- getTemporaryDirectory
+  let script = tmp ++ "/miso-install.sh"
+  got <- tryRun ("curl -fsSL -o " ++ quote script ++ " " ++ quote url)
+  unless got $ failWith ("could not download the installer from " ++ url ++ " (set MISO_INSTALL_URL to another)")
+  ok <- tryRun ("MISO_HOME=" ++ quote home ++ maybe "" (\v -> " MISO_VERSION=" ++ quote v) mv ++ " sh " ++ quote script)
+  removeFile script
+  unless ok $ failWith "the upgrade failed (see above)"
+
+-- | Run hlint on the source dirs of the library and the programs, with the
+-- arguments given.  hlint reads its settings from .hlint.yaml, as with any
+-- Haskell project; miso.yml has none.
+lint :: [String] -> Config -> IO ()
+lint as cfg = do
+  ok <- have "hlint"
+  unless ok $ failWith "miso lint runs hlint, which is not installed (cabal install hlint, or your package manager)"
+  dirs <- filterM doesDirectoryExist (allSourceDirs cfg)
+  info ("Linting " ++ unwords dirs)
+  r <- runExitCode (unwords (map quote ("hlint" : dirs ++ as)))
+  exitWith r
+
+-- | Where install.sh is served.
+installUrl :: String
+installUrl = "https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh"
 
 -- | A new project from a template.
 new :: String -> String -> IO ()

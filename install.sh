@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install the miso tool:
 #
-#   curl -fsSL https://haskell-miso.org/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh | sh
 #
 # Downloads the release for this OS and architecture from GitHub, checks its
 # sha256, and unpacks it in $MISO_HOME (default ~/.miso).  Set MISO_VERSION

@@ -1,6 +1,6 @@
 -- | miso.lock: the exact versions of the dependencies of miso.yml.
 --
--- > # miso.lock: written by miso update.  Commit it; do not edit it.
+-- > # miso.lock: written by miso lock and miso update.  Commit it; do not edit it.
 -- > # Local (path:) dependencies are not locked.
 -- > miso: 0.1.0
 -- > mhs: 0.16.10.0
@@ -8,12 +8,14 @@
 -- >   - name: split               # from Hackage: the version, and the
 -- >     hackage: 0.2.5.1          # sha256 of its tarball
 -- >     sha256: 1e72...
--- >   - name: lens-family         # from git: the rev of miso.yml (if any),
+-- >   - name: lens-family         # from git: the rev of miso.yml, the
 -- >     git: https://github.com/example/lens-family
--- >     rev: v2.1.3               # and the commit it was
--- >     commit: 3d0e...
+-- >     rev: v2.1.3               # commit it was, and the version of the
+-- >     commit: 3d0e...           # package there
+-- >     version: 2.1.3
 --
--- miso update writes it; miso install and miso build install what it says.
+-- miso lock writes it (keeping what is locked already), miso update writes it
+-- with the newest versions; miso install and miso build install what it says.
 -- A dependency of miso.yml that is not in it (or no longer matches it) is
 -- installed as without a lock, with a warning.  Local dependencies and the
 -- packages that come with the tool are never in it.
@@ -28,12 +30,13 @@ module Miso.CLI.Lock
   , describeChanges
   , hackageTarball
   , sha256File
+  , gitCheckout
   ) where
 
 import Control.Monad (unless)
-import Data.Char (isDigit, isHexDigit, isSpace)
+import Data.Char (isDigit, isHexDigit, isSpace, toLower)
 import Data.List (isPrefixOf)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeFile)
 
 import MicroHs.Compile (mhsVersion)
 
@@ -55,6 +58,7 @@ data Locked
       , lkRepo   :: String
       , lkRev    :: Maybe String    -- ^ the rev of miso.yml, if it had one
       , lkCommit :: String
+      , lkGitVersion :: Maybe String  -- ^ the package's version at the commit
       }
   deriving (Show, Eq)
 
@@ -73,7 +77,7 @@ lockedFor lock d
         [] -> Nothing
   where
     matches (LockedHackage _ _ _) = isHackage d
-    matches (LockedGit _ repo rev _) = depGit d == Just repo && depRev d == rev
+    matches (LockedGit _ repo rev _ _) = depGit d == Just repo && depRev d == rev
 
 -----------------------------------------------------------------------------
 -- Reading and writing
@@ -88,7 +92,7 @@ readLock = do
       s <- readFile' lockFile
       case parseYAML s >>= toLock of
         Right l -> pure (Just l)
-        Left e -> failWith (lockFile ++ ": " ++ e ++ " (miso update writes it again)")
+        Left e -> failWith (lockFile ++ ": " ++ e ++ " (miso lock writes it again)")
 
 toLock :: Value -> Either String [Locked]
 toLock (Map kvs) =
@@ -110,7 +114,8 @@ entry (Map kvs) = do
       repo <- req "git"
       rev <- opt "rev"
       c <- req "commit"
-      Right (LockedGit name repo rev c)
+      v <- opt "version"
+      Right (LockedGit name repo rev c v)
     _ -> Left ("package " ++ name ++ ": expected hackage: or git:")
   where
     req k = maybe (Left ("a package without " ++ k)) str (lookup k kvs)
@@ -122,7 +127,7 @@ entry v = Left ("bad package " ++ show v)
 writeLock :: [Locked] -> IO ()
 writeLock ls =
   writeFile lockFile $ unlines $
-    [ "# miso.lock: written by miso update.  Commit it; do not edit it."
+    [ "# miso.lock: written by miso lock and miso update.  Commit it; do not edit it."
     , "# Local (path:) dependencies are not locked."
     , "miso: " ++ version
     , "mhs: " ++ mhsVersion
@@ -132,11 +137,12 @@ writeLock ls =
       [ "  - name: " ++ n
       , "    hackage: " ++ v
       , "    sha256: " ++ h ]
-    item (LockedGit n repo rev c) =
+    item (LockedGit n repo rev c v) =
       [ "  - name: " ++ n
       , "    git: " ++ repo ]
       ++ maybe [] (\r -> ["    rev: " ++ r]) rev
       ++ [ "    commit: " ++ c ]
+      ++ maybe [] (\x -> ["    version: " ++ x]) v
 
 -----------------------------------------------------------------------------
 -- Resolving: what miso update locks a dependency to
@@ -214,7 +220,7 @@ sha256File f = do
     _ -> failWith ("could not compute the sha256 of " ++ f ++ " (sha256sum or shasum is needed)")
 
 -- | The commit a git dependency is at: its rev (a branch, a tag, or a
--- commit), or HEAD.
+-- commit), or HEAD; and the version of the package there.
 resolveGit :: Dep -> IO Locked
 resolveGit d = do
   let repo = maybe "" id (depGit d)
@@ -229,9 +235,55 @@ resolveGit d = do
                Just r | length r >= 4 && all isHexDigit r -> expandCommit d repo r
                _ -> failWith ("dependency " ++ depName d ++ ": " ++ repo ++ " has no "
                               ++ maybe "HEAD" ("branch or tag " ++) rev)
-  pure (LockedGit (depName d) repo rev c)
+  dir <- gitCheckout (depName d) repo c
+  v <- packageVersion dir
+  case (rev, v) of
+    (Just r, Just ver) | Just tagged <- tagVersion r, tagged /= ver ->
+      warn (depName d ++ ": rev " ++ r ++ ", but the version in its package description is " ++ ver)
+    _ -> pure ()
+  pure (LockedGit (depName d) repo rev c v)
   where
     isCommit r = length r == 40 && all isHexDigit r
+
+-- | The version a tag names: v1.2.3 or 1.2.3 (and not a branch or a commit).
+tagVersion :: String -> Maybe String
+tagVersion r =
+  let v = case r of { c : rest | c `elem` "vV" -> rest; _ -> r }
+  in  if not (null v) && isDigit (head v) && all (\c -> isDigit c || c == '.') v then Just v else Nothing
+
+-- | A checkout of a git dependency at a commit, in $MISO_HOME/src (cloned
+-- once; miso install builds it there).
+gitCheckout :: String -> String -> String -> IO FilePath
+gitCheckout n repo c = do
+  home <- misoHome
+  let dir = home ++ "/src/" ++ n ++ "-" ++ c
+  cloned <- doesDirectoryExist dir
+  unless cloned $ do
+    step ("cloning " ++ repo)
+    run ("git clone --quiet " ++ quote repo ++ " " ++ quote dir)
+    run ("git -C " ++ quote dir ++ " checkout --quiet " ++ quote c)
+  pure dir
+
+-- | The version of the package in a directory: its miso.yml's, or (with
+-- none) its .cabal file's.
+packageVersion :: FilePath -> IO (Maybe String)
+packageVersion dir = do
+  yml <- doesFileExist (dir ++ "/" ++ configFile)
+  if yml
+    then do
+      s <- readFile' (dir ++ "/" ++ configFile)
+      pure (case parseYAML s of
+              Right (Map kvs) | Just (Str v) <- lookup "version" kvs -> Just v
+              _ -> Nothing)
+    else do
+      cabals <- filter (".cabal" `isSuffixOf'`) <$> listDirectory dir
+      case cabals of
+        [f] -> do
+          s <- readFile' (dir ++ "/" ++ f)
+          pure (case [ trim (drop 8 l) | l <- lines s, map toLower (take 8 l) == "version:" ] of
+                  v : _ | not (null v) -> Just v
+                  _ -> Nothing)
+        _ -> pure Nothing
 
 -- | The commit of a ref of a remote repository.  For an annotated tag it is
 -- the commit the tag points to (the "^{}" line).
@@ -277,7 +329,7 @@ describeChanges old new =
   ++ [ "- " ++ lkName o ++ " " ++ what o | o <- old, lkName o `notElem` map lkName new ]
   where
     what (LockedHackage _ v _) = v
-    what (LockedGit _ _ rev c) = maybe "" (++ " ") rev ++ "(" ++ take 7 c ++ ")"
+    what (LockedGit _ _ rev c v) = maybe "" (++ " ") rev ++ "(" ++ take 7 c ++ maybe "" (", version " ++) v ++ ")"
 
 -----------------------------------------------------------------------------
 

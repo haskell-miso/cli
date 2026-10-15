@@ -4,12 +4,13 @@ module Miso.CLI.Deps
   , addDeps
   , removeDeps
   , listPackages
+  , lockDeps
   , updateDeps
   , addToYml
   , removeFromYml
   ) where
 
-import Control.Monad (forM_, unless, when)
+import Control.Monad (forM, forM_, unless, when)
 import Data.Char (isSpace)
 import Data.List (isPrefixOf, sort)
 import Data.Maybe (isJust)
@@ -65,7 +66,7 @@ installDeps cfg = do
       unless (isLocal d) $ appendFile stamp (key d ++ "\n")
   where
     lockedAt (LockedHackage _ v _) = " " ++ v
-    lockedAt (LockedGit _ _ _ c) = " at " ++ take 7 c
+    lockedAt (LockedGit _ _ _ c v) = " at " ++ take 7 c ++ maybe "" (\x -> " (" ++ x ++ ")") v
 
 -- | The names of the packages that come with the tool.
 bundledNames :: IO [String]
@@ -102,15 +103,9 @@ installDep (Just (LockedHackage n v h)) d = do
   unless unpacked $ run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
   mcabal <- mcabalInstall d
   run ("cd " ++ quote dir ++ " && " ++ mcabal)
-installDep (Just (LockedGit n repo _ c)) d = do
+installDep (Just (LockedGit n repo _ c _)) d = do
   -- the commit of the lock
-  home <- misoHome
-  let dir = home ++ "/src/" ++ n ++ "-" ++ c
-  cloned <- doesDirectoryExist dir
-  unless cloned $ do
-    step ("cloning " ++ repo)
-    run ("git clone --quiet " ++ quote repo ++ " " ++ quote dir)
-    run ("git -C " ++ quote dir ++ " checkout --quiet " ++ quote c)
+  dir <- gitCheckout n repo c
   mcabal <- mcabalInstall d
   run ("cd " ++ quote dir ++ " && " ++ mcabal)
 installDep Nothing d = do
@@ -266,6 +261,29 @@ listPackages = do
 -- their newest version (with the sha256 of the tarball), git dependencies at
 -- the commit their rev (or HEAD) is now.  Local dependencies, and the packages
 -- that come with the tool, are not locked.  Then install what changed.
+-- | miso lock: lock the dependencies of miso.yml that are not locked yet
+-- (new, or changed in miso.yml), keeping the entries that still match, and
+-- drop the entries of dependencies that are gone.  miso update moves all of
+-- them to the newest versions.
+lockDeps :: Config -> IO ()
+lockDeps cfg = do
+  setupEnv
+  old <- maybe [] id <$> readLock
+  bundled <- bundledNames
+  info ("Locking the dependencies in " ++ lockFile)
+  new <- fmap concat $ forM (allDeps cfg) $ \d ->
+    if isLocal d || (isHackage d && depName d `elem` bundled)
+      then pure []
+      else case lockedFor old d of
+        Just l -> pure [l]
+        Nothing -> (: []) <$> resolveDep old d
+  writeLock new
+  case describeChanges old new of
+    [] -> success (lockFile ++ " is up to date")
+    changes -> do
+      mapM_ step changes
+      success ("Wrote " ++ lockFile ++ " (miso install installs it)")
+
 updateDeps :: Config -> IO ()
 updateDeps cfg = do
   setupEnv

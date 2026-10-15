@@ -400,6 +400,8 @@ dep (Map kvs) = do
   mapM_ known (map fst kvs)
   case (git, path) of
     (Just _, Just _) -> Left ("miso.yml: dependency " ++ name ++ " has both git and path")
+    -- without one the build would depend on what the branch is at
+    (Just _, _) | rev == Nothing -> Left ("miso.yml: git dependency " ++ name ++ " needs rev: (a tag, or a commit)")
     _ -> Right (Dep name git path rev flags)
   where
     opt k = maybe (Right Nothing) (fmap Just . str) (lookup k kvs)
