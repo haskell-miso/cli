@@ -39,7 +39,7 @@ code c =
 isTerminal :: IO Bool
 isTerminal = (/= 0) <$> c_isatty 1
 
--- | Is stdin a terminal (someone to ask)?
+-- | Is stdin a terminal (someone to ask questions)?
 isInputTerminal :: IO Bool
 isInputTerminal = (/= 0) <$> c_isatty 0
 
