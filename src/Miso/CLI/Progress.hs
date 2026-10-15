@@ -5,7 +5,7 @@
 module Miso.CLI.Progress
   ( logged
   , buildLog
-  , showFailedLog
+  , showLog
   ) where
 
 import Control.Monad (unless, when)
@@ -76,9 +76,10 @@ logged tick label logFile cmd = do
   let ms = fromIntegral (t1 - t0) :: Int
   pure (r, show (ms `div` 1000) ++ "." ++ show ((ms `mod` 1000) `div` 100) ++ "s")
 
--- | The log of a failed build, without the lines only mhs -v prints.
-showFailedLog :: FilePath -> IO ()
-showFailedLog logFile = do
+-- | A build's log without the lines only mhs -v prints: its errors when
+-- it failed, and its warnings.
+showLog :: FilePath -> IO ()
+showLog logFile = do
   out <- readFile' logFile
   putStr (unlines (filter (not . isVerbose) (lines out)))
 

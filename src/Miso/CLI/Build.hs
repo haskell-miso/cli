@@ -174,8 +174,8 @@ buildProgram devBuild cfg exe = do
   pure outFile
 
 -- | Run mhs.  On a terminal its output goes to the build log, and the
--- build is shown as it runs (Miso.CLI.Progress), with the log when it
--- fails; how long it took.  Otherwise mhs prints as it goes (miso dev
+-- build is shown as it runs (Miso.CLI.Progress), then what mhs said
+-- (warnings, errors); how long it took.  Otherwise mhs prints as it goes (miso dev
 -- shows the log of miso build --dev this way).
 runMhs :: String -> [String] -> IO (Maybe String)
 runMhs what args = do
@@ -189,9 +189,9 @@ runMhs what args = do
       me <- self
       (r, took) <- logged (threadDelay 100000) what buildLog
                      (quote me ++ " mhs " ++ unwords (map quote ("-v" : filter (/= "-v") args)))
-      when (r /= 0) $ do
-        showFailedLog buildLog
-        failWith ("the build failed (" ++ took ++ ")")
+      -- its warnings, or why it failed
+      showLog buildLog
+      when (r /= 0) $ failWith ("the build failed (" ++ took ++ ")")
       pure (Just took)
 
 -- | The loader of the browser runtime (target browser_rts), if the

@@ -100,7 +100,7 @@ devBuild cfg exe = do
       c_reload
       success ("Built " ++ exeName exe ++ " in " ++ took ++ ", reloading the page")
     else do
-      showFailedLog buildLog
+      showLog buildLog
       warn ("the build failed (" ++ took ++ "); fix it and save, and miso dev builds again (the page keeps the last build)")
 
 -- | What dev watches: the program's sources (and the library's), its
