@@ -37,6 +37,7 @@ miso build            # public/index.js (target: browser)
 | `miso update` | lock the Hackage and git dependencies in `miso.lock` (newest versions, current commits), and install them |
 | `miso doctor` | check the installation and the tools miso needs, and say how to fix what is missing |
 | `miso upgrade [VERSION]` | install the latest release (or `VERSION`) in place |
+| `miso uninstall [--yes]` | remove miso: `$MISO_HOME` (packages, caches) and the tool where `install.sh` put it. It shows what it removes and asks first; it lists the lines of your shell files that add miso to `PATH` (it does not edit them) |
 | `miso mhs ARGS` / `miso mcabal ARGS` | the MicroHs compiler, and MicroCabal |
 
 Output is colored on a terminal; set `NO_COLOR=1` to turn that off.
