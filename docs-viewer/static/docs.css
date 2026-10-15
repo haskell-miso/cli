@@ -131,10 +131,10 @@ a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--fg); font-weight: 700; letter-spacing: -0.01em; }
 .brand:hover { text-decoration: none; }
 .brand-mark {
-  display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px;
-  color: white; font-weight: 800;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  box-shadow: 0 4px 14px var(--accent-soft);
+  /* miso's lambda, in the text colour: black on light, white on dark */
+  display: inline-block; width: 26px; height: 26px; flex: none; background: var(--fg);
+  --i: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpolygon points='0.93,21.65 6.37,21.65 12.25,13.6 9.3,10.1' fill='none' stroke='black' stroke-width='0.7' stroke-linejoin='miter'/%3E%3Cpolygon points='1.5,2 7.8,2 22.5,22 16.2,22'/%3E%3C/svg%3E");
+  -webkit-mask: var(--i) center / contain no-repeat; mask: var(--i) center / contain no-repeat;
 }
 .brand-name { font-size: 16px; }
 .version {

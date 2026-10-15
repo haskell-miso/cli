@@ -213,7 +213,7 @@ topBar ix m =
   H.header_ [ P.class_ "topbar" ]
     [ H.button_ [ P.class_ "icon-button menu-button", E.onClick ToggleMenu, P.title_ "Modules" ] [ icon "menu" ]
     , H.a_ [ P.class_ "brand", P.href_ "#/" ]
-        [ H.span_ [ P.class_ "brand-mark" ] [ text "λ" ]
+        [ H.span_ [ P.class_ "brand-mark", textProp "role" "img", textProp "aria-label" "miso" ] []
         , H.span_ [ P.class_ "brand-name" ] [ text (ixName ix) ]
         , H.span_ [ P.class_ "version" ] [ text (ixVersion ix) ]
         ]
