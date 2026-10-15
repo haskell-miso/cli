@@ -37,6 +37,15 @@ miso build            # public/index.js (target: browser)
 
 Output is colored on a terminal; set `NO_COLOR=1` to turn that off.
 
+With a MicroHs that has the browser runtime (target `browser_rts`), `miso
+dev` does not run emcc on a save of a `target: browser` program: mhs writes
+the program as combinators (`app.comb` next to `index.js` in `public/`, about
+3s), and a runtime built once with emcc runs it.  The runtime is built for the
+program's foreign imports and its C and JavaScript files (`c-sources`,
+`js-sources`, include files) with their options, and kept in `$MISO_HOME/rts`
+for later builds with the same ones; a new `foreign import`, or an edit to one
+of those files, builds another one, once.
+
 `miso dev` and `miso serve` use a small server in the binary
 (`cbits/serve.c`), on 127.0.0.1.  In dev mode HTML pages get a script that
 polls the server and reloads them when a build succeeds; a failed build

@@ -10,13 +10,14 @@ module Miso.CLI.Build
   , modulesIn
   ) where
 
-import Control.Monad (forM, unless, when)
+import Control.Monad (filterM, forM, unless, when)
 import Data.List (intercalate, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Util
+import MicroHs.Compile (mhsVersion)
 
 -- | The C files, JavaScript files and include dirs of a program (the
 -- library's, then its own), with the globs expanded.  The cbits/*.c,
@@ -122,7 +123,8 @@ programArgs devBuild cfg exe out = do
   (cs, js, incs) <- nativeFiles cfg exe
   let natives = maybe [] (\l -> [libNative l]) (cfgLibrary cfg) ++ [exeNative exe]
       isNat = isNative exe
-      browser = exeTarget exe == Just "browser"
+      -- browser_rts: the runtime of miso dev's builds (devComb)
+      browser = maybe False (`elem` ["browser", "browser_rts"]) (exeTarget exe)
       check = maybe True (const False) out
   pure $ [ "-i" ++ d | d <- programDirs cfg exe ]
       ++ [ "-I" ++ d | d <- incs ] ++ concatMap cppOptions natives
@@ -158,6 +160,60 @@ buildProgram devBuild cfg exe = do
     failWith ("miso.yml: static-dir " ++ exeStaticDir exe ++ " does not exist")
   when (static && not nat) $ run ("cp -R " ++ quote (exeStaticDir exe) ++ "/. " ++ quote web ++ "/")
   info ("Building " ++ cfgName cfg ++ " " ++ cfgVersion cfg ++ (if exeName exe == cfgName cfg then "" else " (" ++ exeName exe ++ ")"))
-  runSelf ("mhs " ++ unwords (map quote args))
+  loader <- rtsLoader
+  case loader of
+    Just js | devBuild && exeTarget exe == Just "browser" -> devComb cfg exe web js
+    _ -> do
+      runSelf ("mhs " ++ unwords (map quote args))
+      -- a dev build's program, which this index.js does not read
+      unless nat $ run ("rm -f " ++ quote (web ++ "/app.comb"))
   success ("Built " ++ outFile)
   pure outFile
+
+-- | The loader of the browser runtime (target browser_rts), if the
+-- installed MicroHs has it.
+rtsLoader :: IO (Maybe FilePath)
+rtsLoader = do
+  db <- toolDb
+  -- the data directory is packages/MicroHs-VERSION (packages/mhs-VERSION before 0.16.9)
+  let candidates = [ db ++ "/packages/" ++ d ++ "-" ++ mhsVersion ++ "/data/src/runtime/web/rts-web.js" | d <- ["MicroHs", "mhs"] ]
+  found <- filterM doesFileExist candidates
+  pure (case found of { js : _ -> Just js; [] -> Nothing })
+
+-- | A dev build without a C compiler: mhs writes the program as combinators
+-- (app.comb), which a runtime built once runs (index.js).  The runtime is
+-- built, with emcc, for the program's foreign imports (it has their FFI
+-- table) and its C and JavaScript files, and kept in $MISO_HOME/rts for the
+-- next builds with the same ones.
+devComb :: Config -> Executable -> FilePath -> FilePath -> IO ()
+devComb cfg exe web loader = do
+  -- the program's sources and options (its type checking arguments)
+  checkArgs <- programArgs True cfg exe Nothing
+  let srcArgs = filter (/= "-fno-code") (init checkArgs)
+      comb = web ++ "/app.comb"
+  -- the combinators, and after a ##### line the foreign imports
+  runSelf ("mhs " ++ unwords (map quote (srcArgs ++ ["-o" ++ web ++ "/app.combffi", exeMain exe])))
+  run ("mv -f " ++ quote (web ++ "/app.combffi") ++ " " ++ quote comb)
+  -- what the runtime is built from: the foreign imports, the arguments
+  -- (C and JavaScript files, their options), and those files
+  -- (the output is a placeholder until the key, which names it, is known)
+  let out = "-o" ++ "RUNTIME"
+  rtsArgs <- (++ [loader]) <$> programArgs False cfg exe { exeTarget = Just "browser_rts" } (Just "RUNTIME")
+  let buildArgs = filter (/= out) rtsArgs
+  (cs, js, incs) <- nativeFiles cfg exe
+  headers <- concat <$> mapM (\d -> listDirectory d >>= filterM doesFileExist . map ((d ++ "/") ++) . sort) incs
+  home <- misoHome
+  let dir = home ++ "/rts"
+      keyFile = dir ++ "/key.tmp"
+  createDirectoryIfMissing True dir
+  -- (LC_ALL=C: the combinators are bytes, not text in the locale's encoding)
+  run ("{ LC_ALL=C sed -n '/^#####$/,$p' " ++ quote comb ++ "; printf '%s\\n' " ++ unwords (map quote buildArgs)
+       ++ concatMap (\f -> "; cat " ++ quote f) (cs ++ js ++ headers) ++ "; } | cksum > " ++ quote keyFile)
+  key <- map (\c -> if c == ' ' then '-' else c) . takeWhile (/= '\n') <$> readFile' keyFile
+  let rts = dir ++ "/rts-" ++ mhsVersion ++ "-" ++ key ++ ".js"
+  have <- doesFileExist rts
+  unless have $ do
+    step "building the runtime with emcc (once, for these foreign imports and C and JavaScript files)"
+    runSelf ("mhs " ++ unwords (map quote [ if a == out then "-o" ++ rts ++ ".tmp" else a | a <- rtsArgs ]))
+    run ("mv -f " ++ quote (rts ++ ".tmp") ++ " " ++ quote rts)
+  run ("cp " ++ quote rts ++ " " ++ quote (web ++ "/index.js"))
