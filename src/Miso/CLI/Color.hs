@@ -9,6 +9,7 @@ module Miso.CLI.Color
   , warn
   , failWith
   , isTerminal
+  , isInputTerminal
   ) where
 
 
@@ -37,6 +38,10 @@ code c =
 -- | Is stdout a terminal (for animations)?
 isTerminal :: IO Bool
 isTerminal = (/= 0) <$> c_isatty 1
+
+-- | Is stdin a terminal (someone to ask)?
+isInputTerminal :: IO Bool
+isInputTerminal = (/= 0) <$> c_isatty 0
 
 -- | Wrap a string in the color, if the file descriptor is a terminal.
 colored :: CInt -> [Color] -> String -> IO String

@@ -6,9 +6,9 @@ module Miso.CLI.Main (main) where
 
 import Control.Exception (AsyncException (..), catch, throwIO)
 import Control.Monad (filterM, forM, forM_, unless, when)
-import Data.List (intercalate)
+import Data.List (intercalate, isInfixOf, isPrefixOf)
 import Foreign.C.Types (CInt (..))
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getHomeDirectory, getTemporaryDirectory, listDirectory, removeFile)
 import System.Environment (getArgs, lookupEnv, withArgs)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (hFlush, stderr, stdout)
@@ -71,6 +71,7 @@ main' = do
     ["lock"]           -> withConfig lockDeps
     ["update"]         -> withConfig updateDeps
     ["doctor"]         -> doctor
+    "uninstall" : as   -> uninstall as
     ["upgrade"]        -> upgrade Nothing
     ["upgrade", v]     -> upgrade (Just v)
     ["version"]        -> printVersion
@@ -115,6 +116,7 @@ usage = do
   ts <- sequence
     [ cmd "doctor" "check the installation and the tools miso needs"
     , cmd "upgrade [VERSION]" "install the latest release (or VERSION)"
+    , cmd "uninstall [--yes]" "remove miso, its packages and caches (asks first)"
     , cmd "version" "show the version"
     , cmd "mhs ARGS" "run the MicroHs compiler"
     , cmd "mcabal ARGS" "run MicroCabal"
@@ -271,6 +273,74 @@ lint as cfg = do
   info ("Linting " ++ unwords dirs)
   r <- runExitCode (unwords (map quote ("hlint" : dirs ++ as)))
   exitWith r
+
+-- | miso uninstall [--yes]: remove $MISO_HOME (packages, caches, mcabal's
+-- files) and the tool itself where install.sh put it.  It shows what it
+-- removes and asks first (--yes does not ask; without a terminal --yes is
+-- needed).  It removes only directories that look like a miso installation,
+-- never the home directory, and not a tool in the nix store.  Shell files
+-- that add miso to PATH are listed, not edited.
+uninstall :: [String] -> IO ()
+uninstall as = do
+  yes <- case as of
+    [] -> pure False
+    ["--yes"] -> pure True
+    _ -> failWith "usage: miso uninstall [--yes]"
+  home <- misoHome
+  tool <- toolHome
+  user <- getHomeDirectory
+  let inNix = "/nix/store/" `isPrefixOf` tool
+      dirs = home : [ tool | not inNix, tool /= home ]
+  there <- filterM doesDirectoryExist dirs
+  forM_ there $ \d -> do
+    when (stripSlash d `elem` ["", stripSlash user]) $
+      failWith (d ++ " is your home directory (or /): not removing it; check MISO_HOME")
+    ok <- looksInstalled d
+    unless ok $ failWith (d ++ " does not look like a miso installation (no bin/miso, mcabal/ or mhs-*): not removing it")
+  if null there
+    then success ("Nothing to remove: " ++ home ++ " is not there")
+    else do
+      info "miso uninstall removes:"
+      forM_ there $ \d -> do
+        size <- maybe "" (takeWhile (`notElem` " \t")) <$> readCommand ("du -sh " ++ quote d ++ " 2>/dev/null")
+        step (d ++ (if null size then "" else " (" ++ size ++ ")"))
+      when inNix $ step ("not " ++ tool ++ " (installed with nix: nix profile remove miso)")
+      tty <- isInputTerminal
+      go <- if yes then pure True
+            else if not tty then failWith "miso uninstall asks first; without a terminal, run miso uninstall --yes"
+            else do
+              putStr "Are you sure? This deletes everything listed above. [y/N] "
+              hFlush stdout
+              answer <- (Just <$> getLine) `catch` noAnswer
+              pure (maybe False (`elem` ["y", "Y", "yes", "Yes"]) answer)
+      unless go $ success "Nothing removed" >> exitWith ExitSuccess
+      -- Windows cannot remove a running miso.exe, but can move it away
+      when windows $ do
+        tmp <- getTemporaryDirectory
+        let exe = tool ++ "/bin/miso.exe"
+        running <- doesFileExist exe
+        when running $ () <$ tryRun ("mv -f " ++ quote exe ++ " " ++ quote (tmp ++ "/miso-uninstalled.exe"))
+      run ("rm -rf " ++ unwords (map quote there))
+      success "Removed miso"
+  -- shell files that add it to PATH
+  let rcs = [ user ++ "/" ++ f | f <- [".zshrc", ".zprofile", ".bashrc", ".bash_profile", ".profile", ".config/fish/config.fish"] ]
+  found <- fmap concat $ forM rcs $ \f -> do
+    ok <- doesFileExist f
+    if not ok then pure [] else do
+      s <- readFile' f
+      pure [ f ++ ":" ++ show n ++ ": " ++ l | (n, l) <- zip [1 :: Int ..] (lines s), any (`isInfixOf` l) (".miso/bin" : [ d ++ "/bin" | d <- dirs ]) ]
+  unless (null found) $ do
+    info "These lines add miso to PATH; remove them yourself:"
+    mapM_ step found
+  where
+    stripSlash = reverse . dropWhile (== '/') . reverse
+    noAnswer :: IOError -> IO (Maybe String)
+    noAnswer _ = pure Nothing
+    looksInstalled d = do
+      bin <- (||) <$> doesFileExist (d ++ "/bin/miso") <*> doesFileExist (d ++ "/bin/miso.exe")
+      mcabal <- doesDirectoryExist (d ++ "/mcabal")
+      entries <- listDirectory d
+      pure (bin || mcabal || any ("mhs-" `isPrefixOf`) entries)
 
 -- | Where install.sh is served.
 installUrl :: String
