@@ -76,6 +76,8 @@ doctor = do
           ok ("library (" ++ unwords (libSourceDirs lib) ++ ")")
         forM_ (cfgExecutables cfg) $ \e ->
           ok ("program " ++ exeName e ++ " (" ++ exeMain e ++ " in " ++ unwords (exeSourceDirs e) ++ ", target " ++ maybe "native" id (exeTarget e) ++ ")")
+        forM_ (cfgTests cfg) $ \t ->
+          ok ("test " ++ exeName t ++ " (" ++ exeMain t ++ " in " ++ unwords (exeSourceDirs t) ++ ")")
         dirs <- mapM doesDirectoryExist (allSourceDirs cfg)
         check (and dirs) ("source dirs: " ++ unwords (allSourceDirs cfg)) "a source dir of miso.yml does not exist"
         let browser = any (maybe False (`elem` ["browser", "browser_js"]) . exeTarget) (cfgExecutables cfg)
