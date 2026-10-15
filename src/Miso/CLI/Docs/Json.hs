@@ -14,6 +14,7 @@ import Data.Char (ord)
 import Miso.CLI.Docs.Extract
 import Miso.CLI.Docs.Lex (highlight, lexHaskell)
 import Miso.CLI.Docs.Markup (Block (..), Inline (..), plainText)
+import Miso.CLI.Docs.Prose (blocksHtml, summaryHtml)
 
 data J = JS String | JN Int | JB Bool | JA [J] | JO [(String, J)]
 
@@ -65,7 +66,7 @@ indexScript pkg = script "index" $ JO
   , ("version", JS (pkgVersion pkg))
   , ("synopsis", JS (pkgSynopsis pkg))
   , ("modules", JA [ JO [ ("n", JS (modName m))
-                         , ("sum", JA (map inline (summary (modDoc m))))
+                         , ("sum", JS (summaryHtml (modDoc m)))
                          , ("lines", JN (length (modSource m)))
                          , ("exports", JN (length [ () | Decl _ <- modItems m ]))
                          , ("hidden", JB (modHidden m)) ]
@@ -86,76 +87,45 @@ indexScript pkg = script "index" $ JO
 moduleScript :: Module -> String
 moduleScript m = script (modName m) $ JO
   [ ("name", JS (modName m))
-  , ("doc", blocks (modDoc m))
-  , ("items", JA (map item (modItems m)))
+  , ("doc", blocks (modName m) (modDoc m))
+  , ("items", JA (map (item (modName m)) (modItems m)))
   , ("src", JA (map JS (modSource m)))
   , ("header", JA [ JA [JS k, JS v] | (k, v) <- modHeader m ])
   ]
 
-item :: Item -> J
-item it = case it of
+item :: String -> Item -> J
+item mn it = case it of
   Heading n t -> JA [JS "h", JN n, JS t]
-  Prose bs -> JA [JS "p", blocks bs]
-  Decl d -> JA [JS "d", decl d]
+  Prose bs -> JA [JS "p", blocks mn bs]
+  Decl d -> JA [JS "d", decl mn d]
   ReExport m inlined -> JA [JS "re", JS m, JB inlined]
 
-decl :: Declaration -> J
-decl d = JO $
+decl :: String -> Declaration -> J
+decl mn d = JO $
   [ ("n", JS (declName d)), ("a", JS (declAnchor d)), ("k", JS (declKind d)), ("s", JS (declSig d))
-  , ("d", blocks (declDoc d)), ("l", JN (declLine d)), ("e", JN (declEnd d)), ("f", JS (declFrom d)) ]
-  ++ [ ("m", JA (map decl (declMembers d))) | not (null (declMembers d)) ]
-  ++ [ ("c", JA (map sub (declSubs d))) | not (null (declSubs d)) ]
-  ++ [ ("args", JA [ JA [JS (argType a), blocks (argDoc a)] | a <- declArgs d ]) | not (null (declArgs d)) ]
+  , ("d", blocks mn (declDoc d)), ("l", JN (declLine d)), ("e", JN (declEnd d)), ("f", JS (declFrom d)) ]
+  ++ [ ("m", JA (map (decl mn) (declMembers d))) | not (null (declMembers d)) ]
+  ++ [ ("c", JA (map (sub mn) (declSubs d))) | not (null (declSubs d)) ]
+  ++ [ ("args", JA [ JA [JS (argType a), blocks mn (argDoc a)] | a <- declArgs d ]) | not (null (declArgs d)) ]
   ++ [ ("i", JA (map inst (declInstances d))) | not (null (declInstances d)) ]
   ++ [ ("dep", JS (declDeprecated d)) | not (null (declWarning d)) ]
   ++ [ ("wk", JS (declWarning d)) | not (null (declWarning d)) ]
   ++ [ ("fx", JS (declFixity d)) | not (null (declFixity d)) ]
   ++ [ ("min", JS (declMinimal d)) | not (null (declMinimal d)) ]
 
-sub :: Sub -> J
-sub s = JO $
-  [ ("n", JS (subName s)), ("a", JS (subAnchor s)), ("k", JS (subKind s)), ("s", JS (subSig s)), ("d", blocks (subDoc s)) ]
-  ++ [ ("fs", JA (map sub (subFields s))) | not (null (subFields s)) ]
+sub :: String -> Sub -> J
+sub mn s = JO $
+  [ ("n", JS (subName s)), ("a", JS (subAnchor s)), ("k", JS (subKind s)), ("s", JS (subSig s)), ("d", blocks mn (subDoc s)) ]
+  ++ [ ("fs", JA (map (sub mn) (subFields s))) | not (null (subFields s)) ]
 
 inst :: Instance -> J
 inst i = JO
-  [ ("h", JS (instHead i)), ("d", blocks (instDoc i)), ("m", JS (instModule i))
+  [ ("h", JS (instHead i)), ("d", blocks (instModule i) (instDoc i)), ("m", JS (instModule i))
   , ("l", JN (instLine i)), ("e", JN (instEnd i)), ("dv", JB (instDerived i)) ]
 
-blocks :: [Block] -> J
-blocks = JA . map block
-
-block :: Block -> J
-block b = case b of
-  Para is -> JA [JS "p", inlines is]
-  CodeBlock c -> JA [JS "code", JS (highlight (const False) (lexHaskell c))]
-  Pre is -> JA [JS "pre", inlines is]
-  Example e rs -> JA [JS "ex", JS e, JA (map JS rs)]
-  Property e -> JA [JS "prop", JS e]
-  Bullets xs -> JA [JS "ul", JA (map blocks xs)]
-  Numbered xs -> JA [JS "ol", JA (map blocks xs)]
-  Definitions xs -> JA [JS "dl", JA [ JA [inlines t, blocks d] | (t, d) <- xs ]]
-  Table rows h -> JA [JS "table", JA [ JA (map inlines r) | r <- rows ], JN h]
-  Header n is -> JA [JS "hd", JN n, inlines is]
-  MathBlock m -> JA [JS "math", JS m]
-  Since v -> JA [JS "since", JS v]
-
-inlines :: [Inline] -> J
-inlines = JA . map inline
-
-inline :: Inline -> J
-inline i = case i of
-  Str s -> JS s
-  Code s -> JA [JS "c", JS s]
-  Mono is -> JA [JS "m", inlines is]
-  Emph is -> JA [JS "e", inlines is]
-  Strong is -> JA [JS "b", inlines is]
-  Ref n u -> JA [JS "r", JS n, JS u]
-  ModRef m k -> JA [JS "M", JS m, JB k]
-  Link l u -> JA [JS "l", JS l, JS u]
-  Image u t -> JA [JS "img", JS u, JS t]
-  Math m -> JA [JS "x", JS m]
-  Anchor a -> JA [JS "a", JS a]
+-- | Documentation, as HTML (Miso.CLI.Docs.Prose).
+blocks :: String -> [Block] -> J
+blocks mn bs = JS (blocksHtml mn bs)
 
 -----------------------------------------------------------------------------
 -- Hoogle

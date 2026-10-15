@@ -92,11 +92,29 @@
           }
         }).observe(document.body, { childList: true, subtree: true });
         window.misoDocsGo = function (h) { location.hash = h; };
+        // The palette (a miso component) opens on this event.
+        window.misoDocsOpenPalette = function () { window.dispatchEvent(new Event("misodocs:palette")); };
+        // Search, for the palette: the modules, then the names, the best
+        // first; a line for each, its fields (name, kind, module, link)
+        // separated by tabs.
+        var ix = null;
+        window.misoDocsSearch = function (query) {
+          var q = String(query || "").trim().toLowerCase(), out = [];
+          if (!q) return "";
+          if (!ix) ix = JSON.parse(misoDocs.data.index);
+          ix.modules.filter(function (m) { return !m.hidden && m.n.toLowerCase().indexOf(q) >= 0; }).slice(0, 6)
+            .forEach(function (m) { out.push([m.n, "module", "", "#/" + m.n].join("\t")); });
+          ix.defs.filter(function (d) { return d[0].toLowerCase().indexOf(q) >= 0; })
+            .map(function (d) { var l = d[0].toLowerCase(); return [l === q ? 0 : 1, l.indexOf(q) === 0 ? 0 : 1, d[0].length, d]; })
+            .sort(function (a, b) { return a[0] - b[0] || a[1] - b[1] || a[2] - b[2] || (a[3][0] < b[3][0] ? -1 : 1); })
+            .slice(0, 40)
+            .forEach(function (r) { var d = r[3]; out.push([d[0], d[1], d[2], "#/" + d[2] + "/" + d[3]].join("\t")); });
+          return out.join("\n");
+        };
         document.addEventListener("keydown", function (e) {
           var typing = /^(INPUT|TEXTAREA)$/.test((document.activeElement || {}).tagName || "");
           var open = (e.key === "/" && !typing) || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k");
-          var b = document.getElementById("search-button");
-          if (open && b && !document.getElementById("palette-input")) { e.preventDefault(); b.click(); }
+          if (open && !document.getElementById("palette-input")) { e.preventDefault(); misoDocsOpenPalette(); }
         });
       })();
     </script>

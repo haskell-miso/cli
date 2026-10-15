@@ -14,13 +14,18 @@
 --
 -- The hash is read from window.location (miso's URI parser does not take
 -- these hashes).  The script of index.html loads data files, scrolls to
--- what a hash names once it is drawn, and draws math (with KaTeX).
+-- what a hash names once it is drawn, draws math (with KaTeX), and searches
+-- the index for the palette.
+--
+-- The search palette is a component of its own, so typing in it draws the
+-- palette, not the page.  Documentation comes as HTML (the tool draws it),
+-- so a page is a few nodes for each declaration.
 module Main (main) where
 
 import Data.List (sortOn)
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
-import Miso hiding (Image (..), Sub)
+import Miso hiding (Sub)
 import qualified Miso.CSS as CSS
 import qualified Miso.Html.Element as H
 import qualified Miso.Html.Event as E
@@ -42,25 +47,18 @@ data Theme = System | Light | Dark
 
 data Model = Model
   { route    :: Route
-  , query    :: MisoString
   , theme    :: Theme
   , menuOpen :: Bool
   , loaded   :: M.Map MisoString Module
   , missing  :: [MisoString]
-  , palette  :: Bool          -- ^ the search palette is open
-  , selected :: Int           -- ^ the result it has selected
   } deriving (Eq)
 
 data Action
   = SetHash MisoString
-  | SetQuery MisoString
   | NextTheme
   | ToggleMenu
   | Loaded MisoString (Maybe MisoString)
   | OpenPalette
-  | ClosePalette
-  | PaletteKey KeyCode
-  | Select Int
 
 main :: IO ()
 main = do
@@ -68,7 +66,7 @@ main = do
   raw <- getData "index"
   case maybe (Left "no data/index.js") eitherDecode raw of
     Left e -> startApp defaultEvents (component () (\_ -> pure ()) (\_ -> broken e))
-    Right ix -> startApp events (app ix (Model (routeOf h) "" System False M.empty [] False 0))
+    Right ix -> startApp events (app ix (Model (routeOf h) System False M.empty []))
 
 -- | The events the page listens for: the palette needs keydown (its
 -- arrows) and mouseenter, which are not among the default ones.
@@ -131,32 +129,14 @@ update_ ix = \case
     case r >>= either (const Nothing) Just . eitherDecode of
       Just mo -> modify (\m -> m { loaded = M.insert mn mo (loaded m) })
       Nothing -> modify (\m -> m { missing = mn : missing m })
-  SetQuery q -> modify (\m -> m { query = q, selected = 0 })
-  OpenPalette -> modify (\m -> m { palette = True, selected = 0 })
-  ClosePalette -> modify (\m -> m { palette = False })
-  Select i -> modify (\m -> m { selected = i })
-  PaletteKey (KeyCode k) -> do
-    m <- get
-    let rs = results ix (query m)
-        n = length rs
-    case k of
-      27 -> modify (\m' -> m' { palette = False })
-      40 -> modify (\m' -> m' { selected = if n == 0 then 0 else (selected m' + 1) `mod` n })
-      38 -> modify (\m' -> m' { selected = if n == 0 then 0 else (selected m' - 1) `mod` n })
-      13 -> case drop (selected m) rs of
-        r : _ -> do
-          modify (\m' -> m' { palette = False, query = "" })
-          io_ (go (resHref r))
-        [] -> pure ()
-      _ -> pure ()
+  OpenPalette -> io_ $ do
+    w <- jsg "window"
+    _ <- w # "misoDocsOpenPalette" $ ()
+    pure ()
   NextTheme -> modify (\m -> m { theme = next (theme m) })
   ToggleMenu -> modify (\m -> m { menuOpen = not (menuOpen m) })
   where
     known mn = mn `elem` map sumName (ixModules ix)
-    go href = do
-      w <- jsg "window"
-      _ <- w # "misoDocsGo" $ href
-      pure ()
     next System = Dark
     next Dark = Light
     next Light = System
@@ -209,7 +189,7 @@ sourceHref mn l e = "#/" <> mn <> "/src/" <> ms l <> (if e > l then "-" <> ms e 
 -----------------------------------------------------------------------------
 -- The page
 
-view_ :: Index -> Model -> View context props Model Action
+view_ :: Index -> Model -> View () props Model Action
 view_ ix m =
   H.div_
     [ P.classList_
@@ -225,7 +205,7 @@ view_ ix m =
         , H.main_ [ P.class_ "content" ] (page ix m)
         , toc m
         ]
-    , if palette m then searchPalette ix m else text ""
+    , "palette" +> paletteComponent
     ]
 
 topBar :: Index -> Model -> View context props Model Action
@@ -269,62 +249,122 @@ sidebar ix m =
       H.a_ [ P.classList_ [ ("nav-module", True), ("active", mn == current) ], P.href_ (moduleHref mn) ]
         (moduleName mn)
 
--- | A result of a search: a module or a name.
+-----------------------------------------------------------------------------
+-- The search palette: a component, with its own model.  The search is the
+-- page's (misoDocsSearch, over the index); it shows what that finds.  It
+-- opens on misodocs:palette (the search button, "/", Ctrl-K, Cmd-K); up and
+-- down select, enter goes, escape closes.
+
+-- | A module or a name that matches a query.
 data Result = Result
   { resName   :: MisoString
   , resKind   :: MisoString
   , resModule :: MisoString
   , resHref   :: MisoString
-  }
+  } deriving (Eq)
 
--- | What matches a query: the modules, then the names, the best first.
-results :: Index -> MisoString -> [Result]
-results ix query0
-  | S.null q = []
-  | otherwise =
-      take 6 [ Result mn "module" "" (moduleHref mn) | s <- ixModules ix, not (sumHidden s), let mn = sumName s, matches mn ]
-      ++ take 40 [ Result n k mn (declHref mn a) | Def n k mn a <- sortOn rank (filter (\(Def n _ _ _) -> matches n) (ixDefs ix)) ]
+data Palette = Palette
+  { open     :: Bool
+  , query    :: MisoString
+  , selected :: Int
+  , results  :: [Result]
+  } deriving (Eq)
+
+data PaletteAction
+  = Open
+  | Close
+  | SetQuery MisoString
+  | Found MisoString [Result]
+  | Key KeyCode
+  | Select Int
+
+paletteComponent :: Component () () Palette PaletteAction
+paletteComponent = (component (Palette False "" 0 []) updatePalette viewPalette)
+  { subs = [ windowEvent "misodocs:palette" Open ] }
+
+-- | An event of the window, as an action.
+windowEvent :: MisoString -> action -> (action -> IO ()) -> IO model -> IO ()
+windowEvent name action sink _ = do
+  w <- jsg "window"
+  _ <- addEventListener w name (\_ -> sink action)
+  pure ()
+
+updatePalette :: PaletteAction -> Effect parent props Palette PaletteAction
+updatePalette = \case
+  -- a new input each time, so a new query
+  Open -> modify (\m -> m { open = True, query = "", results = [], selected = 0 })
+  Close -> modify (\m -> m { open = False })
+  Select i -> modify (\m -> m { selected = i })
+  SetQuery q -> do
+    modify (\m -> m { query = q })
+    io (Found q <$> search q)
+  Found q rs -> modify (\m -> if query m == q then m { results = rs, selected = 0 } else m)
+  Key (KeyCode k) -> do
+    m <- get
+    let n = length (results m)
+    case k of
+      27 -> modify (\m' -> m' { open = False })
+      40 -> modify (\m' -> m' { selected = if n == 0 then 0 else (selected m' + 1) `mod` n })
+      38 -> modify (\m' -> m' { selected = if n == 0 then 0 else (selected m' - 1) `mod` n })
+      13 -> case drop (selected m) (results m) of
+        r : _ -> do
+          modify (\m' -> m' { open = False })
+          io_ (go (resHref r))
+        [] -> pure ()
+      _ -> pure ()
   where
-    q = S.toLower (S.strip query0)
-    matches s = q `S.isInfixOf` S.toLower s
-    rank (Def n _ _ _) = (S.toLower n /= q, not (q `S.isPrefixOf` S.toLower n), S.length n, n)
+    go href = do
+      w <- jsg "window"
+      _ <- w # "misoDocsGo" $ href
+      pure ()
 
--- | The search palette: a box at the top of the page, with what matches
--- as you type.  Up and down select, enter goes, escape closes.
-searchPalette :: Index -> Model -> View context props Model Action
-searchPalette ix m =
-  H.div_ [ P.class_ "palette-layer" ]
-    [ H.div_ [ P.class_ "palette-backdrop", E.onClick ClosePalette ] []
-    , H.div_ [ P.class_ "palette", textProp "role" "dialog" ]
-        [ H.div_ [ P.class_ "palette-input" ]
-            [ icon "search"
-            , H.input_
-                [ P.type_ "text", P.id_ "palette-input", P.placeholder_ "Search modules and definitions"
-                , P.value_ (query m), E.onInput SetQuery, E.onKeyDown PaletteKey
-                , textProp "autocomplete" "off", textProp "spellcheck" "false" ]
-            , H.kbd_ [ E.onClick ClosePalette ] [ text "esc" ]
-            ]
-        , H.div_ [ P.class_ "palette-results" ] $
-            case results ix (query m) of
-              [] | S.null (S.strip (query m)) -> [ H.div_ [ P.class_ "palette-hint" ] [ text "Type a module or a name: map, Html, onClick" ] ]
-                 | otherwise -> [ H.div_ [ P.class_ "palette-hint" ] [ text ("Nothing matches " <> query m) ] ]
-              rs -> zipWith row [0 ..] rs
-        , H.div_ [ P.class_ "palette-foot" ]
-            [ H.span_ [] [ H.kbd_ [] [ text "↑" ], H.kbd_ [] [ text "↓" ], text " select" ]
-            , H.span_ [] [ H.kbd_ [] [ text "↵" ], text " open" ]
-            , H.span_ [] [ H.kbd_ [] [ text "esc" ], text " close" ]
+-- | What the page's search finds for a query: a line for each result, its
+-- fields separated by tabs.
+search :: MisoString -> IO [Result]
+search q = do
+  w <- jsg "window"
+  r <- w # "misoDocsSearch" $ q
+  s <- fromMaybe "" <$> castJSVal r
+  pure [ Result a b c d | l <- S.lines s, [a, b, c, d] <- [S.splitOn "\t" l] ]
+
+viewPalette :: Palette -> View context props Palette PaletteAction
+viewPalette m
+  | not (open m) = H.div_ [] []
+  | otherwise =
+      H.div_ [ P.class_ "palette-layer" ]
+        [ H.div_ [ P.class_ "palette-backdrop", E.onClick Close ] []
+        , H.div_ [ P.class_ "palette", textProp "role" "dialog" ]
+            [ H.div_ [ P.class_ "palette-input" ]
+                [ icon "search"
+                , H.input_
+                    [ P.type_ "text", P.id_ "palette-input", P.placeholder_ "Search modules and definitions"
+                    -- the input has its value (no value_: drawing it while a
+                    -- key is typed would undo the key)
+                    , E.onInput SetQuery, E.onKeyDown Key
+                    , textProp "autocomplete" "off", textProp "spellcheck" "false" ]
+                , H.kbd_ [ E.onClick Close ] [ text "esc" ]
+                ]
+            , H.div_ [ P.class_ "palette-results" ] $
+                case results m of
+                  [] | S.null (S.strip (query m)) -> [ hint "Type a module or a name" ]
+                     | otherwise -> [ hint ("Nothing matches " <> query m) ]
+                  rs -> zipWith row [0 ..] rs
+            , H.div_ [ P.class_ "palette-foot" ]
+                [ H.span_ [] [ H.kbd_ [] [ text "↑" ], H.kbd_ [] [ text "↓" ], text " select" ]
+                , H.span_ [] [ H.kbd_ [] [ text "↵" ], text " open" ]
+                , H.span_ [] [ H.kbd_ [] [ text "esc" ], text " close" ]
+                ]
             ]
         ]
-    ]
   where
+    hint t = H.div_ [ P.class_ "palette-hint" ] [ text t ]
     row i r =
       H.a_ [ P.classList_ [ ("palette-row", True), ("selected", i == selected m) ]
-           , P.href_ (resHref r), E.onClick ClosePalette, onMouseEnter' i ]
+           , P.href_ (resHref r), E.onClick Close, E.onMouseEnter (Select i) ]
         [ H.span_ [ P.class_ ("kind kind-" <> resKind r) ] [ text (kindLetter (resKind r)) ]
         , H.span_ [ P.class_ "palette-name" ] (marked (resName r))
         , H.span_ [ P.class_ "palette-module" ] [ text (if S.null (resModule r) then "module" else resModule r) ]
         ]
-    onMouseEnter' i = E.onMouseEnter (Select i)
     -- the name, with what the query matches stressed
     marked n =
       let q = S.toLower (S.strip (query m))
@@ -403,7 +443,8 @@ homePage ix =
   , H.div_ [ P.class_ "cards" ]
       [ H.a_ [ P.class_ "card", P.href_ (moduleHref (sumName s)) ]
           [ H.div_ [ P.class_ "card-title" ] (moduleName (sumName s))
-          , H.p_ [ P.class_ "card-text" ] (if null (sumText s) then [ H.span_ [ P.class_ "muted" ] [ text "No description" ] ] else inlines (firstSentence (sumText s)))
+          , if S.null (sumText s) then H.p_ [ P.class_ "card-text muted" ] [ text "No description" ]
+            else H.p_ [ P.class_ "card-text", prop "innerHTML" (sumText s) ] []
           , H.div_ [ P.class_ "card-meta" ]
               [ text (ms (sumExports s) <> " exports · " <> ms (sumLines s) <> " lines") ]
           ]
@@ -445,16 +486,6 @@ indexPage ix =
           | c >= 'A' && c <= 'Z' -> S.singleton c
       _ -> "Symbols"
 
--- | Inlines up to the end of their first sentence.
-firstSentence :: [Inline] -> [Inline]
-firstSentence = \case
-  Str s : rest ->
-    case S.breakOn ". " s of
-      (a, b) | not (S.null b) -> [ Str (a <> ".") ]
-      _ -> Str s : firstSentence rest
-  i : rest -> i : firstSentence rest
-  [] -> []
-
 modulePage :: Module -> [View context props Model Action]
 modulePage mo =
   [ H.div_ [ P.class_ "module-header" ]
@@ -467,13 +498,13 @@ modulePage mo =
       ]
   , if null (modHeader mo) then text ""
     else H.dl_ [ P.class_ "module-fields" ] (concat [ [ H.dt_ [] [ text k ], H.dd_ [] [ text v ] ] | (k, v) <- modHeader mo ])
-  , H.div_ [ P.class_ "doc module-doc" ] (blocks (modName mo) (modDoc mo))
+  , doc "doc module-doc" (modDoc mo)
   ] ++ map (item mo) (modItems mo)
 
 item :: Module -> Item -> View context props Model Action
 item mo = \case
   Heading n t -> (if n <= 1 then H.h2_ else H.h3_) [ P.class_ "section-heading", P.id_ ("/" <> modName mo <> "/" <> slug t) ] [ text t ]
-  Prose bs -> H.div_ [ P.class_ "doc prose" ] (blocks (modName mo) bs)
+  Prose h -> doc "doc prose" h
   ReExport mn inlined ->
     H.div_ [ P.class_ ("reexport" <> (if inlined then " inlined" else "")) ]
       [ icon "export"
@@ -508,10 +539,10 @@ declaration mo member d =
       else H.div_ [ P.class_ "args" ]
              [ H.div_ [ P.class_ "arg" ]
                  [ H.code_ [ P.class_ "arg-type", prop "innerHTML" t ] []
-                 , H.div_ [ P.class_ "doc arg-doc" ] (blocks (modName mo) ad)
+                 , doc "doc arg-doc" ad
                  ]
              | (t, ad) <- declArgs d ]
-    , if null (declDoc d) then text "" else H.div_ [ P.class_ "doc" ] (blocks (modName mo) (declDoc d))
+    , doc "doc" (declDoc d)
     , if null (declSubs d) then text ""
       else H.div_ [ P.class_ "subs" ]
              (H.div_ [ P.class_ "subs-title" ] [ text (if any ((== "constructor") . subKind) (declSubs d) then "Constructors" else "Fields") ]
@@ -543,7 +574,7 @@ sub mo s =
             then H.code_ [ P.class_ "sub-sig" ] [ H.span_ [ P.class_ "hl-name" ] [ text (subName s) ], text " :: ", H.span_ [ prop "innerHTML" (subSig s) ] [] ]
             else H.code_ [ P.class_ "sub-sig", prop "innerHTML" (subSig s) ] []
         ]
-    , if null (subDoc s) then text "" else H.div_ [ P.class_ "doc sub-doc" ] (blocks (modName mo) (subDoc s))
+    , doc "doc sub-doc" (subDoc s)
     , if null (subFields s) then text "" else H.div_ [ P.class_ "fields" ] (map (sub mo) (subFields s))
     ]
 
@@ -558,7 +589,7 @@ instanceRow i =
             then H.a_ [ P.class_ "source-link", P.href_ (sourceHref (instModule i) (instLine i) (instEnd i)) ] [ icon "code", text "Source" ]
             else H.span_ [ P.class_ "derived", P.title_ "Known from the type checker" ] [ text "type checker" ]
         ]
-    , if null (instDoc i) then text "" else H.div_ [ P.class_ "doc" ] (blocks (instModule i) (instDoc i))
+    , doc "doc" (instDoc i)
     ]
 
 -- | Lines of a module's source, as one highlighted snippet.
@@ -609,66 +640,12 @@ slug = S.intercalate "-" . S.words . S.toLower
 -----------------------------------------------------------------------------
 -- Documentation
 
-blocks :: MisoString -> [Block] -> [View context props model action]
-blocks mn = map (block mn)
-
-block :: MisoString -> Block -> View context props model action
-block mn = \case
-  Para is -> H.p_ [] (inlinesIn mn is)
-  CodeBlock h -> H.pre_ [ P.class_ "code" ] [ H.code_ [ prop "innerHTML" h ] [] ]
-  Pre is -> H.pre_ [ P.class_ "code pre-rich" ] [ H.code_ [] (inlinesIn mn is) ]
-  Example e rs ->
-    H.div_ [ P.class_ "example" ]
-      [ H.div_ [ P.class_ "example-input" ] [ H.span_ [ P.class_ "prompt" ] [ text ">>>" ], H.code_ [] [ text e ] ]
-      , if null rs then text "" else H.pre_ [ P.class_ "example-output" ] [ text (S.intercalate "\n" rs) ]
-      ]
-  QuickCheck e ->
-    H.div_ [ P.class_ "example" ]
-      [ H.div_ [ P.class_ "example-input" ] [ H.span_ [ P.class_ "prompt" ] [ text "prop>" ], H.code_ [] [ text e ] ] ]
-  Bullets xs -> H.ul_ [] [ H.li_ [] (blocks mn x) | x <- xs ]
-  Numbered xs -> H.ol_ [] [ H.li_ [] (blocks mn x) | x <- xs ]
-  Definitions xs -> H.dl_ [] (concat [ [ H.dt_ [] (inlinesIn mn t), H.dd_ [] (blocks mn d) ] | (t, d) <- xs ])
-  Table rows h ->
-    H.div_ [ P.class_ "table-wrap" ]
-      [ H.table_ []
-          [ H.thead_ [] [ H.tr_ [] [ H.th_ [] (inlinesIn mn c) | c <- r ] | r <- take h rows ]
-          , H.tbody_ [] [ H.tr_ [] [ H.td_ [] (inlinesIn mn c) | c <- r ] | r <- drop h rows ]
-          ]
-      ]
-  Header n is -> (if n <= 1 then H.h3_ else H.h4_) [ P.class_ "doc-heading" ] (inlinesIn mn is)
-  MathBlock t -> H.div_ [ P.class_ "math display", textProp "data-tex" t, prop "innerHTML" (escapeHtml t) ] []
-  Since v -> H.div_ [ P.class_ "since" ] [ text ("Since " <> v) ]
-
-inlines :: [Inline] -> [View context props model action]
-inlines = inlinesIn ""
-
-inlinesIn :: MisoString -> [Inline] -> [View context props model action]
-inlinesIn mn = map (inline mn)
-
-inline :: MisoString -> Inline -> View context props model action
-inline mn = \case
-  Str s -> text s
-  Code c -> H.code_ [] [ text c ]
-  Mono is -> H.code_ [ P.class_ "mono" ] (inlinesIn mn is)
-  Emph is -> H.em_ [] (inlinesIn mn is)
-  Strong is -> H.strong_ [] (inlinesIn mn is)
-  Ref n "" -> H.code_ [ P.class_ "ref unresolved" ] [ text n ]
-  Ref n href -> H.a_ [ P.class_ "ref", P.href_ href ] [ H.code_ [] [ text n ] ]
-  ModRef m known -> modRef m known
-  Link label url -> H.a_ [ P.href_ url, P.class_ "external" ] [ text label ]
-  Image url title -> H.img_ [ P.src_ url, P.alt_ title, P.title_ title, P.class_ "doc-image" ]
-  Math t -> H.span_ [ P.class_ "math", textProp "data-tex" t, prop "innerHTML" (escapeHtml t) ] []
-  Anchor a -> H.span_ [ P.class_ "anchor", P.id_ ("/" <> mn <> "/#" <> a) ] []
-
--- | Text as HTML.  (Math is drawn by KaTeX in its element, which miso
--- leaves alone when its content is innerHTML.)
-escapeHtml :: MisoString -> MisoString
-escapeHtml = S.concatMap esc
-  where
-    esc '<' = "&lt;"
-    esc '>' = "&gt;"
-    esc '&' = "&amp;"
-    esc c = S.singleton c
+-- | Documentation (HTML, from the tool), or nothing.  (Math in it is drawn
+-- by KaTeX, which miso leaves alone in an element whose content is innerHTML.)
+doc :: MisoString -> MisoString -> View context props model action
+doc c h
+  | S.null h = text ""
+  | otherwise = H.div_ [ P.class_ c, prop "innerHTML" h ] []
 
 modRef :: MisoString -> Bool -> View context props model action
 modRef mn True = H.a_ [ P.class_ "modref", P.href_ (moduleHref mn) ] [ text mn ]

@@ -2,7 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 -- | What miso docs extracts from a library, as the viewer reads it from the
 -- JSON of data/: the index (the package, its modules, the names search
--- finds), and a module at a time.
+-- finds), and a module at a time.  Documentation comes as HTML (the tool
+-- draws it), so a module is a few nodes for each declaration.
 module Docs.Types where
 
 import qualified Data.Map as M
@@ -24,7 +25,7 @@ instance Eq Index where
 
 data Summary = Summary
   { sumName    :: MisoString
-  , sumText    :: [Inline]
+  , sumText    :: MisoString       -- ^ HTML: the first sentence of its docs
   , sumLines   :: Int
   , sumExports :: Int
   , sumHidden  :: Bool
@@ -35,7 +36,7 @@ data Def = Def MisoString MisoString MisoString MisoString
 
 data Module = Module
   { modName   :: MisoString
-  , modDoc    :: [Block]
+  , modDoc    :: MisoString       -- ^ HTML
   , modItems  :: [Item]
   , modSource :: [MisoString]   -- ^ highlighted HTML, a line each
   , modHeader :: [(MisoString, MisoString)]  -- ^ Copyright, License, ...
@@ -47,7 +48,7 @@ instance Eq Module where
 
 data Item
   = Heading Int MisoString
-  | Prose [Block]
+  | Prose MisoString            -- ^ HTML
   | Decl Declaration
   | ReExport MisoString Bool
 
@@ -56,10 +57,10 @@ data Declaration = Declaration
   , declAnchor     :: MisoString
   , declKind       :: MisoString
   , declSig        :: MisoString   -- ^ highlighted HTML
-  , declDoc        :: [Block]
+  , declDoc        :: MisoString   -- ^ HTML
   , declMembers    :: [Declaration]
   , declSubs       :: [Sub]
-  , declArgs       :: [(MisoString, [Block])]
+  , declArgs       :: [(MisoString, MisoString)]  -- ^ a type and its docs, HTML
   , declInstances  :: [Instance]
   , declLine       :: Int
   , declEnd        :: Int
@@ -75,45 +76,18 @@ data Sub = Sub
   , subAnchor :: MisoString
   , subKind   :: MisoString
   , subSig    :: MisoString
-  , subDoc    :: [Block]
+  , subDoc    :: MisoString       -- ^ HTML
   , subFields :: [Sub]
   }
 
 data Instance = Instance
   { instHead    :: MisoString
-  , instDoc     :: [Block]
+  , instDoc     :: MisoString     -- ^ HTML
   , instModule  :: MisoString
   , instLine    :: Int
   , instEnd     :: Int
   , instDerived :: Bool
   }
-
-data Block
-  = Para [Inline]
-  | CodeBlock MisoString                -- ^ highlighted HTML
-  | Pre [Inline]
-  | Example MisoString [MisoString]
-  | QuickCheck MisoString        -- ^ prop>
-  | Bullets [[Block]]
-  | Numbered [[Block]]
-  | Definitions [([Inline], [Block])]
-  | Table [[[Inline]]] Int
-  | Header Int [Inline]
-  | MathBlock MisoString
-  | Since MisoString
-
-data Inline
-  = Str MisoString
-  | Code MisoString
-  | Mono [Inline]
-  | Emph [Inline]
-  | Strong [Inline]
-  | Ref MisoString MisoString           -- ^ an identifier, and its URL ("" if not here)
-  | ModRef MisoString Bool
-  | Link MisoString MisoString
-  | Image MisoString MisoString
-  | Math MisoString
-  | Anchor MisoString
 
 -----------------------------------------------------------------------------
 -- JSON (see Miso.CLI.Docs.Json in the miso tool)
@@ -174,35 +148,3 @@ str o k = maybe "" id <$> o .:? k
 -- | A list that is left out when it is empty.
 opt :: FromJSON a => M.Map MisoString Value -> MisoString -> Parser [a]
 opt o k = maybe [] id <$> o .:? k
-
-instance FromJSON Block where
-  parseJSON = withArray "Block" $ \case
-    [J.String "p", is] -> Para <$> parseJSON is
-    [J.String "code", c] -> CodeBlock <$> parseJSON c
-    [J.String "pre", is] -> Pre <$> parseJSON is
-    [J.String "ex", e, rs] -> Example <$> parseJSON e <*> parseJSON rs
-    [J.String "prop", e] -> QuickCheck <$> parseJSON e
-    [J.String "ul", xs] -> Bullets <$> parseJSON xs
-    [J.String "ol", xs] -> Numbered <$> parseJSON xs
-    [J.String "dl", xs] -> Definitions . map (\(Pair a b) -> (a, b)) <$> parseJSON xs
-    [J.String "table", rows, h] -> Table <$> parseJSON rows <*> parseJSON h
-    [J.String "hd", n, is] -> Header <$> parseJSON n <*> parseJSON is
-    [J.String "math", m] -> MathBlock <$> parseJSON m
-    [J.String "since", v] -> Since <$> parseJSON v
-    _ -> fail "Block"
-
-instance FromJSON Inline where
-  parseJSON = \case
-    J.String s -> pure (Str s)
-    v -> flip (withArray "Inline") v $ \case
-      [J.String "c", s] -> Code <$> parseJSON s
-      [J.String "m", is] -> Mono <$> parseJSON is
-      [J.String "e", is] -> Emph <$> parseJSON is
-      [J.String "b", is] -> Strong <$> parseJSON is
-      [J.String "r", n, u] -> Ref <$> parseJSON n <*> parseJSON u
-      [J.String "M", m, k] -> ModRef <$> parseJSON m <*> parseJSON k
-      [J.String "l", l, u] -> Link <$> parseJSON l <*> parseJSON u
-      [J.String "img", u, t] -> Image <$> parseJSON u <*> parseJSON t
-      [J.String "x", m] -> Math <$> parseJSON m
-      [J.String "a", a] -> Anchor <$> parseJSON a
-      _ -> fail "Inline"
