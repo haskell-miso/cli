@@ -366,13 +366,16 @@ viewPalette m
         , H.span_ [ P.class_ "palette-module" ] [ text (if S.null (resModule r) then "module" else resModule r) ]
         ]
     -- the name, with what the query matches stressed
-    marked n =
-      let q = S.toLower (S.strip (query m))
-          (pre, rest) = S.breakOn q (S.toLower n)
-          a = S.length pre
-          b = S.length q
-      in if S.null rest || S.null q then [ text n ]
-         else [ text (S.take a n), H.mark_ [] [ text (S.take b (S.drop a n)) ], text (S.drop (a + b) n) ]
+    -- (breakOn fails on an empty needle, so an empty query is tested first)
+    marked n
+      | S.null q = [ text n ]
+      | S.null rest = [ text n ]
+      | otherwise = [ text (S.take a n), H.mark_ [] [ text (S.take b (S.drop a n)) ], text (S.drop (a + b) n) ]
+      where
+        q = S.toLower (S.strip (query m))
+        (pre, rest) = S.breakOn q (S.toLower n)
+        a = S.length pre
+        b = S.length q
 
 -- | A module name with its last component stressed.
 moduleName :: MisoString -> [View context props model action]
