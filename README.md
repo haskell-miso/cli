@@ -1,4 +1,4 @@
-# miso
+# 🔋 miso
 
 The command line tool for [miso](https://haskell-miso.org) apps: an
 executable with the [MicroHs](https://github.com/augustss/MicroHs) compiler
