@@ -78,7 +78,9 @@ miso test pass
 if miso test > test.log 2>&1; then echo "smoke test: miso test passed with a failing test" >&2; cat test.log >&2; exit 1; fi
 grep -q "1 of 2 tests failed: fail" test.log || { echo "smoke test: miso test did not report the failing test" >&2; cat test.log >&2; exit 1; }
 miso doctor
-miso list
+# miso list shows what miso install installed (split), not only what comes with miso
+miso list > list.log
+grep -q '^  split ' list.log || { echo "smoke test: miso list does not show split" >&2; cat list.log >&2; exit 1; }
 # serve: a page from public/
 mkdir -p public && echo '<html><body>served</body></html>' > public/index.html
 miso serve --port 8799 > serve.log 2>&1 &
