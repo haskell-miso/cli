@@ -49,7 +49,7 @@ miso build            # public/index.js (target: browser)
 | `miso clean` | remove `dist/`, `public/`, and the caches |
 | `miso install` | install the dependencies of `miso.yml` |
 | `miso add PKG...` / `miso remove PKG...` | edit the dependencies of `miso.yml` (keeping its comments), and install |
-| `miso list` | the installed packages: those that come with miso, and those you installed |
+| `miso list` | the installed packages: those that come with miso, and those miso install installed (in `$MISO_HOME/mcabal`) |
 | `miso lock` | write `miso.lock`: the dependencies of `miso.yml` and the packages they need; lock what is not locked yet, keep what is |
 | `miso update` | a new package list for mcabal, and `miso.lock` again at its versions (git dependencies at their current commits); then install |
 | `miso vendor` | lock as `miso lock` does, and copy the source of each locked dependency to `vendor/NAME`; builds then install from there, and fail rather than download |

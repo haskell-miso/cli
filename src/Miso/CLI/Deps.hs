@@ -276,18 +276,28 @@ listPackages = do
   bundledFile <- pure (db ++ "/miso-bundled")
   hasBundled <- doesFileExist bundledFile
   bundled <- if hasBundled then lines <$> readFile' bundledFile else pure pkgs
-  let (mine, user) = (filter (`elem` bundled) pkgs, filter (`notElem` bundled) pkgs)
-      showPkg p = do
-        let nv = take (length p - 4) p
-            (rv, rn) = break (== '-') (reverse nv)
-            n = reverse (drop 1 rn)
+  -- what miso install installs goes in $MISO_HOME/mcabal/mhs-VERSION, where
+  -- mcabal installs (and mhs finds it)
+  pd <- pkgDir
+  hasUser <- doesDirectoryExist (pd ++ "/packages")
+  installed <- if hasUser then sort . filter (".pkg" `isSuffixOf'`) <$> listDirectory (pd ++ "/packages") else pure []
+  let mine = filter (`elem` bundled) pkgs
+      user = filter (`notElem` bundled) pkgs ++ installed
+      nameVersion p =
+        let (rv, rn) = break (== '-') (reverse (take (length p - 4) p))
+        in  (reverse (drop 1 rn), reverse rv)
+      -- (a package installed that also comes with miso: mhs takes one of them)
+      showPkg isUser p = do
+        let (n, v) = nameVersion p
+            also = [ () | isUser, b <- mine, fst (nameVersion b) == n ]
         n' <- colored 1 [Bold] n
-        v' <- colored 1 [Dim] (reverse rv)
-        putStrLn ("  " ++ n' ++ replicate (24 - length n) ' ' ++ v')
+        v' <- colored 1 [Dim] v
+        note <- if null also then pure "" else (" " ++) <$> colored 1 [Dim] "(also comes with miso)"
+        putStrLn ("  " ++ n' ++ replicate (24 - length n) ' ' ++ v' ++ note)
   info "Packages that come with miso"
-  mapM_ showPkg mine
-  info "Packages installed by miso install"
-  if null user then colored 1 [Dim] "  (none)" >>= putStrLn else mapM_ showPkg user
+  mapM_ (showPkg False) mine
+  info ("Packages installed by miso install (" ++ pd ++ ")")
+  if null user then colored 1 [Dim] "  (none)" >>= putStrLn else mapM_ (showPkg True) user
 
 -----------------------------------------------------------------------------
 -- miso update
