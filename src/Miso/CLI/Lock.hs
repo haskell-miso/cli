@@ -1,4 +1,6 @@
--- | miso.lock: the exact versions of the dependencies of miso.yml.
+-- | miso.lock: the exact versions of the dependencies of miso.yml, and of
+-- the packages they depend on (Miso.CLI.Resolve), in the order they install
+-- in.
 --
 -- > # miso.lock: written by miso lock and miso update.  Commit it; do not edit it.
 -- > # Local (path:) dependencies are not locked.
@@ -15,7 +17,8 @@
 -- >     version: 2.1.3
 --
 -- miso lock writes it (keeping what is locked already), miso update writes it
--- with the newest versions; miso install and miso build install what it says.
+-- with the versions of mcabal's new package list; miso install and miso
+-- build install what it says, in its order.
 -- A dependency of miso.yml that is not in it (or no longer matches it) is
 -- installed as without a lock, with a warning.  Local dependencies and the
 -- packages that come with the tool are never in it.
@@ -26,7 +29,8 @@ module Miso.CLI.Lock
   , writeLock
   , lockedFor
   , lockedName
-  , resolveDep
+  , resolveGit
+  , newestVersion
   , describeChanges
   , hackageTarball
   , sha256File
@@ -68,12 +72,13 @@ lockedName = lkName
 
 -- | The entry of the lock for a dependency of miso.yml, if the lock has one
 -- that still matches it (same source, and for git the same repository and
--- rev).
-lockedFor :: [Locked] -> Dep -> Maybe Locked
-lockedFor lock d
+-- rev).  The lock has the name mcabal installs a package by, which the
+-- function gives (random is random-mhs).
+lockedFor :: (String -> String) -> [Locked] -> Dep -> Maybe Locked
+lockedFor pn lock d
   | isLocal d = Nothing
   | otherwise =
-      case [ l | l <- lock, lkName l == depName d, matches l ] of
+      case [ l | l <- lock, lkName l `elem` [depName d, pn (depName d)], matches l ] of
         l : _ -> Just l
         [] -> Nothing
   where
@@ -146,22 +151,7 @@ writeLock ls =
       ++ maybe [] (\x -> ["    version: " ++ x]) v
 
 -----------------------------------------------------------------------------
--- Resolving: what miso update locks a dependency to
-
--- | Lock a (Hackage or git) dependency.  An entry of the old lock for the
--- same Hackage version is kept as it is (its tarball was checked when it was
--- locked).
-resolveDep :: [Locked] -> Dep -> IO Locked
-resolveDep old d
-  | isGit d = resolveGit d
-  | otherwise = do
-      v <- newestVersion (depName d)
-      case [ l | l@(LockedHackage n v' _) <- old, n == depName d, v' == v ] of
-        l : _ -> pure l
-        [] -> do
-          f <- hackageTarball (depName d) v
-          h <- sha256File f
-          pure (LockedHackage (depName d) v h)
+-- Resolving: Hackage's newest version, and the commit of a git dependency
 
 -- | The newest version of a package on Hackage that is not deprecated.
 newestVersion :: String -> IO String
