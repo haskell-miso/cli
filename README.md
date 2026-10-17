@@ -35,6 +35,7 @@ miso build            # public/index.js (target: browser)
 | `miso list` | the installed packages: those that come with miso, and those you installed |
 | `miso lock` | write `miso.lock`: lock what is not locked yet (new or changed in `miso.yml`), keep what is |
 | `miso update` | lock the Hackage and git dependencies in `miso.lock` (newest versions, current commits), and install them |
+| `miso vendor` | lock as `miso lock` does, and copy the source of each locked dependency to `vendor/NAME`; builds then install from there, and fail rather than download |
 | `miso doctor` | check the installation and the tools miso needs, and say how to fix what is missing |
 | `miso upgrade [VERSION]` | install the latest release (or `VERSION`) in place |
 | `miso uninstall [--yes]` | remove miso: `$MISO_HOME` (packages, caches) and the tool where `install.sh` put it. It shows what it removes and asks first; it lists the lines of your shell files that add miso to `PATH` (it does not edit them) |
@@ -203,6 +204,39 @@ without a lock, with a warning; without a `miso.lock` nothing changes.
 
 Only the dependencies listed in `miso.yml` are locked: the packages they
 depend on are still installed by mcabal, from its package list.
+
+## vendor/
+
+`miso vendor` runs `miso lock`, then copies the source of each package in
+`miso.lock` to `vendor/NAME`: the Hackage tarball (checked against its
+sha256), unpacked, or the files of the git commit (`git archive`, so no
+`.git`).  `vendor/.miso-vendor` lists them, each with its version or commit
+and a sha256 of its files:
+
+```
+# vendor/.miso-vendor: written by miso vendor.  Commit it; do not edit it.
+hackage split 0.2.5.1 18adb60f... files:9f0560fc...
+```
+
+Commit `vendor/` with `miso.lock`.  A project with `vendor/.miso-vendor` is
+vendored:
+
+- `miso build` and `miso install` install the locked dependencies from
+  `vendor/`, and never download them.  A dependency that is not locked, not
+  in `vendor/`, at another version than `miso.lock`'s, or whose files have
+  changed since `miso vendor` copied them, is an error: run `miso vendor`
+  (after `miso update`, too).
+- `miso vendor` keeps a package that is there as it copied it, copies again
+  one that changed, and removes one that is no longer a dependency.  Other
+  files in `vendor/` are left alone.  `vendor/.gitattributes` keeps git from
+  changing line endings (which would change the sha256), and
+  `vendor/.gitignore` ignores what mcabal builds there.
+- Do not edit the vendored sources; for a patched copy, use a `path:`
+  dependency.
+- As with `miso.lock`, only the dependencies of `miso.yml` are vendored, not
+  the packages they depend on (mcabal still installs those from its package
+  list), nor local dependencies or the packages that come with the tool.
+  Removing `vendor/` makes the project an ordinary one again.
 
 ## Requirements
 

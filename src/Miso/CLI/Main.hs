@@ -72,6 +72,7 @@ main' = do
     ["list"]           -> listPackages
     ["lock"]           -> withConfig lockDeps
     ["update"]         -> withConfig updateDeps
+    ["vendor"]         -> withConfig vendorDeps
     ["doctor"]         -> doctor
     "uninstall" : as   -> uninstall as
     ["upgrade"]        -> upgrade Nothing
@@ -115,6 +116,7 @@ usage = do
     , cmd "list" "list the installed packages"
     , cmd "lock" "write miso.lock, keeping the versions locked already"
     , cmd "update" "lock Hackage and git dependencies in miso.lock, and install them"
+    , cmd "vendor" "copy the locked dependencies' sources to vendor/, to build from"
     ]
   ts <- sequence
     [ cmd "doctor" "check the installation and the tools miso needs"

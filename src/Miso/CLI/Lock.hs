@@ -30,6 +30,7 @@ module Miso.CLI.Lock
   , describeChanges
   , hackageTarball
   , sha256File
+  , sha256Tree
   , gitCheckout
   ) where
 
@@ -218,6 +219,18 @@ sha256File f = do
   case fmap (takeWhile isHexDigit) out of
     Just h | length h == 64 -> pure h
     _ -> failWith ("could not compute the sha256 of " ++ f ++ " (sha256sum or shasum is needed)")
+
+-- | One sha256 of the files under a directory, their paths and contents,
+-- leaving out what mcabal builds there (dist-mcabal/).
+sha256Tree :: FilePath -> IO String
+sha256Tree dir = do
+  hasSum <- have "sha256sum"
+  let sha = if hasSum then "sha256sum" else "shasum -a 256"
+  out <- readCommand ("cd " ++ quote dir ++ " && find . -type f ! -path './dist-mcabal/*' | LC_ALL=C sort"
+                      ++ " | while IFS= read -r f; do " ++ sha ++ " \"$f\"; done | " ++ sha)
+  case fmap (takeWhile isHexDigit) out of
+    Just h | length h == 64 -> pure h
+    _ -> failWith ("could not compute the sha256 of the files in " ++ dir ++ " (sha256sum or shasum is needed)")
 
 -- | The commit a git dependency is at: its rev (a branch, a tag, or a
 -- commit), or HEAD; and the version of the package there.
