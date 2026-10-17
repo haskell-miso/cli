@@ -14,17 +14,18 @@ import Control.Monad (forM, forM_, unless, when)
 import Data.Char (isSpace)
 import Data.List (isPrefixOf, sort)
 import Data.Maybe (isJust)
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Lock
 import Miso.CLI.Util
 
--- | The record of what miso install installed, kept in the package
--- database (a new release replaces both).
+-- | The record of what miso install installed, kept with the packages it
+-- installs (not next to the tool, which may be read-only, as in the nix
+-- store).  It is per release, so a new one installs them again.
 stampFile :: IO FilePath
-stampFile = (++ "/miso-installed") <$> toolDb
+stampFile = (\d -> d ++ "/miso-installed-" ++ version) <$> pkgDir
 
 readStamp :: IO [String]
 readStamp = do
@@ -55,6 +56,7 @@ installDeps cfg = do
         warn (depName d ++ " is not locked in " ++ lockFile ++ " (new, or changed in miso.yml); miso update locks it")
   done <- readStamp
   stamp <- stampFile
+  createDirectoryIfMissing True (parent stamp)
   -- the stamp of a locked dependency has its version or commit: a new lock installs it again
   let key d = show d ++ maybe "" (\l -> " " ++ show l) (locked d)
       todo = [ d | d <- allDeps cfg, isLocal d || key d `notElem` done ]

@@ -52,6 +52,30 @@
           '';
         };
 
+        # The release CI built, for nix: the tarball of the GitHub release in
+        # nix/release.json (which the release workflow writes), unpacked.
+        # The Linux binaries are static: nothing to build or patch.
+        #   nix profile install github:haskell-miso/cli#release
+        release = builtins.fromJSON (builtins.readFile ./nix/release.json);
+        hasRelease = release.version != null && release.assets ? ${system};
+        miso-release = pkgs.stdenvNoCC.mkDerivation {
+          pname = "miso";
+          version = pkgs.lib.removePrefix "v" release.version;
+          src = pkgs.fetchurl { inherit (release.assets.${system}) url sha256; };
+          dontConfigure = true;
+          dontBuild = true;
+          dontFixup = true;
+          installPhase = ''
+            mkdir -p $out
+            cp -R . $out/
+          '';
+          meta = {
+            description = "The command line tool for miso apps (the GitHub release)";
+            homepage = "https://github.com/haskell-miso/cli";
+            platforms = [ system ];
+          };
+        };
+
         # The release asset: miso-SYSTEM.tar.gz, and its sha256.
         tarball = pkgs.runCommand "miso-${system}-tarball" { } ''
           mkdir -p $out work
@@ -62,8 +86,10 @@
         '';
       in
       {
-        packages.default = miso-cli;
-        packages.tarball = tarball;
+        packages = {
+          default = miso-cli;
+          inherit tarball;
+        } // pkgs.lib.optionalAttrs hasRelease { release = miso-release; };
         apps.default = {
           type = "app";
           program = "${miso-cli}/bin/miso";

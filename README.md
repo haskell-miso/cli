@@ -6,8 +6,25 @@ and [MicroCabal](https://github.com/augustss/MicroCabal) inside, and miso
 and its dependencies already installed.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh | sh
+curl -fsSL https://haskell-miso.org/download | sh
 ```
+
+It downloads the release for your OS and architecture, checks its sha256,
+unpacks it in `~/.miso` (or `$MISO_HOME`), and asks to add `~/.miso/bin` to
+`PATH` in your shell's startup file (`.zshrc`, `.bashrc` or `.bash_profile`,
+fish's `config.fish`, or `.profile`).  `sh -s -- --yes` does not ask, and
+`--no-modify-path` leaves the startup files alone; `MISO_VERSION=v0.1.0`
+installs that release.  On NixOS it says to install miso with nix
+instead, and installs nothing (`--yes` installs in `~/.miso` anyway):
+
+```sh
+nix profile install github:haskell-miso/cli#release   # the release, prebuilt
+nix profile install github:haskell-miso/cli           # built from source
+```
+
+`#release` is the tarball of the latest GitHub release (the one `install.sh`
+downloads), pinned with its sha256 in `nix/release.json`, which the release
+workflow updates on main after each release.
 
 ```sh
 miso new counter      # a new project: miso.yml, app/Main.hs, static/index.html
@@ -248,8 +265,12 @@ Pushing a `v*` tag builds five platforms (x86_64 and aarch64 Linux and
 aarch64 macOS with nix; Intel macOS and Windows, which the miso flake's
 nixpkgs does not support, with `scripts/build-release.sh`) and attaches them
 to the release, where `install.sh` finds them.
-`install.sh` is served from this repository (`miso upgrade` downloads it from
-`https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh`, or from
+`https://haskell-miso.org/download` serves a copy of `install.sh`: the
+website's `static/download`, in
+[haskell-miso.org](https://github.com/haskell-miso/haskell-miso.org).  A
+change to `install.sh` here goes there with a pull request to that
+repository.  `miso upgrade` downloads `install.sh` from
+`https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh` (or
 `MISO_INSTALL_URL`).  The
 release assets must be downloadable without a GitHub login, so the releases
 need a public repository.
