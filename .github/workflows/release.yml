@@ -100,3 +100,26 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+      # Pin the release for nix (the flake's #release package): its tarballs
+      # and their sha256, in nix/release.json on main.  The tarballs are the
+      # ones above; nothing is built again.
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          path: repo
+      - name: Pin the release in nix/release.json
+        run: |
+          tag=$GITHUB_REF_NAME
+          assets='{}'
+          for s in x86_64-linux aarch64-linux aarch64-darwin x86_64-darwin; do
+            h=$(cut -d' ' -f1 "dist/miso-$s.tar.gz.sha256")
+            u=https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/miso-$s.tar.gz
+            assets=$(jq --arg s "$s" --arg u "$u" --arg h "$h" '. + {($s): {url: $u, sha256: $h}}' <<< "$assets")
+          done
+          jq -n --arg v "$tag" --argjson a "$assets" '{version: $v, assets: $a}' > repo/nix/release.json
+          cd repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add nix/release.json
+          git commit -m "nix/release.json: $tag"
+          git push origin HEAD:main

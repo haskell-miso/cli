@@ -22,10 +22,11 @@ import Miso.CLI.Config
 import Miso.CLI.Lock
 import Miso.CLI.Util
 
--- | The record of what miso install installed, kept in the package
--- database (a new release replaces both).
+-- | The record of what miso install installed, kept with the packages it
+-- installs (not next to the tool, which may be read-only, as in the nix
+-- store).  It is per release, so a new one installs them again.
 stampFile :: IO FilePath
-stampFile = (++ "/miso-installed") <$> toolDb
+stampFile = (\d -> d ++ "/miso-installed-" ++ version) <$> pkgDir
 
 readStamp :: IO [String]
 readStamp = do
@@ -60,6 +61,7 @@ installDeps cfg = do
     _ -> pure ()
   done <- readStamp
   stamp <- stampFile
+  createDirectoryIfMissing True (parent stamp)
   -- the stamp of a locked dependency has its version or commit: a new lock installs it again
   let key d = show d ++ maybe "" (\l -> " " ++ show l) (locked d)
       todo = [ d | d <- allDeps cfg, isLocal d || key d `notElem` done ]
