@@ -71,11 +71,22 @@ installDeps cfg = do
                   d : _ -> d
                   [] -> Dep { depName = lockedName l, depGit = Nothing, depPath = Nothing, depRev = Nothing, depFlags = Nothing }
       -- (the packages that come with the tool are not installed)
-      unlocked = [ d | d <- allDeps cfg, locked d == Nothing, isLocal d || depName d `notElem` bundled ]
-      items = [ (depOf l, Just l) | l <- maybe [] id lock ] ++ [ (d, Nothing) | d <- unlocked ]
+  -- a dependency of miso.yml that MicroHs has built in (text, bytestring,
+  -- ...) is neither locked nor installed; mcabal is asked which, for those
+  -- the lock lacks
+  let maybeBuiltIn = [ depName d | d <- allDeps cfg, isHackage d, depName d `notElem` bundled, locked d == Nothing ]
+  builtIn <- if null maybeBuiltIn then pure [] else builtInNames maybeBuiltIn
+  let unlocked = [ d | d <- allDeps cfg, locked d == Nothing, isLocal d || depName d `notElem` (bundled ++ builtIn) ]
+      -- an entry of the lock for a dependency of miso.yml that has changed
+      -- (another git rev, or now local) is not installed: the dependency is,
+      -- as unlocked, until miso lock
+      stale l = or [ locked d /= Just l | d <- allDeps cfg, lockedName l `elem` [depName d, pn (depName d)] ]
+      items = [ (depOf l, Just l) | l <- maybe [] id lock, not (stale l) ] ++ [ (d, Nothing) | d <- unlocked ]
   -- a dependency the lock does not have: a warning, or in a vendored
   -- project an error, before anything is installed
   case (lock, vend) of
+    (Nothing, Just _) | not (null [ d | d <- unlocked, not (isLocal d) ]) ->
+      failWith ("this project is vendored, but has no " ++ lockFile ++ ": miso vendor locks and vendors its dependencies")
     (_, Just _) ->
       forM_ [ d | d <- unlocked, not (isLocal d) ] $ \d ->
         failWith (depName d ++ " is not locked in " ++ lockFile ++ ", and this project is vendored: miso vendor locks and vendors it")
@@ -393,9 +404,9 @@ vendoredDir vs ml d = do
 -- sha256 of its files in vendor/.miso-vendor.  miso install then installs
 -- from there, without Hackage or git, and fails rather than download.
 -- Packages vendored before that are no longer dependencies are removed.
--- Local dependencies, and the packages that come with the tool, are not
--- vendored (they are not locked); nor are the packages the dependencies
--- depend on, which mcabal still installs from its package list.
+-- Every package of the lock is vendored: the dependencies of miso.yml and
+-- the packages they need.  Local dependencies, and the packages that come
+-- with the tool or with MicroHs, are not (they are not locked).
 vendorDeps :: Config -> IO ()
 vendorDeps cfg = do
   lockDeps cfg

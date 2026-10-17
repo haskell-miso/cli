@@ -12,11 +12,12 @@
 module Miso.CLI.Resolve
   ( resolveTree
   , mcabalNames
+  , builtInNames
   , bundledNames
   ) where
 
 import Control.Exception (SomeException, evaluate, try)
-import Control.Monad (forM_, unless)
+import Control.Monad (filterM, forM_, unless)
 import Data.IORef (modifyIORef, newIORef, readIORef)
 import Data.List (intercalate, isPrefixOf, nub)
 import Data.Version (showVersion)
@@ -50,6 +51,15 @@ patchedName env n = fst (MC.patchName (MC.backend env) env (n, MC.makeVersion []
 -- packages.  (It runs miso mhs, so it is only asked for when needed.)
 mcabalNames :: IO (String -> String)
 mcabalNames = patchedName <$> mcabalEnv
+
+-- | Which of these packages need no installing, as MicroHs has them built in
+-- (text, bytestring, ...) or they come with the tool.  (It runs miso mhs, so
+-- it is only asked for when needed.)
+builtInNames :: [String] -> IO [String]
+builtInNames ns = do
+  env <- mcabalEnv
+  bundled <- bundledNames
+  filterM (fmap not . needsInstall env bundled . patchedName env) ns
 
 -- | The names of the packages that come with the tool.
 bundledNames :: IO [String]
