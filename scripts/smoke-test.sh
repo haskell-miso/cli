@@ -32,14 +32,22 @@ out=$(miso run | tail -1 | tr -d '\r')
 # miso vendor copies split to vendor/, and the build installs it from there
 # (without the Hackage tarball, and installed again: no miso-installed)
 miso vendor
-grep -q '^hackage split ' vendor/split/.miso-vendor || { echo "smoke test: miso vendor did not vendor split" >&2; ls -la vendor >&2; exit 1; }
+grep -q '^hackage split .* files:' vendor/.miso-vendor || { echo "smoke test: miso vendor did not vendor split" >&2; ls -la vendor >&2; exit 1; }
 miso vendor | grep -q 'vendor/split (kept)' || { echo "smoke test: miso vendor copied split again" >&2; exit 1; }
 rm -rf "$MISO_HOME/src/hackage" "$(ls -d "$tmp"/miso-*)"/mhs-*/miso-installed
 miso run > vendor.log 2>&1 || { echo "smoke test: miso run failed with vendor/" >&2; cat vendor.log >&2; exit 1; }
 grep -q 'Installing split from vendor/split' vendor.log || { echo "smoke test: split was not installed from vendor/" >&2; cat vendor.log >&2; exit 1; }
-! ls "$MISO_HOME"/src/hackage/split-*.tar.gz >/dev/null 2>&1 ||{ echo "smoke test: split was downloaded despite vendor/" >&2; exit 1; }
+! ls "$MISO_HOME"/src/hackage/split-*.tar.gz >/dev/null 2>&1 || { echo "smoke test: split was downloaded despite vendor/" >&2; exit 1; }
 out=$(tail -1 vendor.log | tr -d '\r')
 [ "$out" = hello ] || { echo "smoke test: expected hello with vendor/, got: $out" >&2; exit 1; }
+# an edited vendored package is an error (not a download), until miso vendor
+f=$(find vendor/split -name '*.hs' | head -1)
+echo '-- edited' >> "$f"
+rm -rf "$(ls -d "$tmp"/miso-*)"/mhs-*/miso-installed
+if miso install > vendor.log 2>&1; then echo "smoke test: miso install used an edited vendor/split" >&2; cat vendor.log >&2; exit 1; fi
+grep -q 'vendor/split has changed' vendor.log || { echo "smoke test: miso install did not report the edited vendor/split" >&2; cat vendor.log >&2; exit 1; }
+miso vendor | grep -q '+ vendor/split' || { echo "smoke test: miso vendor did not copy the edited split again" >&2; exit 1; }
+miso install
 # miso test: a test that passes and one that fails
 cat >> miso.yml <<'YML'
 tests:
