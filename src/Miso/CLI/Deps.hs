@@ -6,6 +6,7 @@ module Miso.CLI.Deps
   , listPackages
   , lockDeps
   , updateDeps
+  , vendorDeps
   , addToYml
   , removeFromYml
   ) where
@@ -14,7 +15,7 @@ import Control.Monad (forM, forM_, unless, when)
 import Data.Char (isSpace)
 import Data.List (isPrefixOf, sort)
 import Data.Maybe (isJust)
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 
 import Miso.CLI.Color
 import Miso.CLI.Config
@@ -41,7 +42,7 @@ mcabalInstall d = do
 -- | Install the dependencies that are not installed yet.  A local checkout
 -- is installed on every build, as it changes; the others once.  With a
 -- miso.lock, Hackage and git dependencies are installed at the versions and
--- commits it has.
+-- commits it has, from vendor/ when miso vendor put them there.
 installDeps :: Config -> IO ()
 installDeps cfg = do
   setupEnv
@@ -61,8 +62,11 @@ installDeps cfg = do
   if null todo
     then step "dependencies are installed"
     else forM_ todo $ \d -> do
-      info ("Installing " ++ depName d ++ maybe "" (" from " ++) (depPath d) ++ maybe "" lockedAt (locked d))
-      installDep (locked d) d
+      v <- maybe (pure Nothing) vendored (locked d)
+      info ("Installing " ++ depName d ++ maybe "" (" from " ++) (maybe (depPath d) Just v) ++ maybe "" lockedAt (locked d))
+      case v of
+        Just dir -> mcabalInstall d >>= \mcabal -> run ("cd " ++ quote dir ++ " && " ++ mcabal)
+        Nothing -> installDep (locked d) d
       unless (isLocal d) $ appendFile stamp (key d ++ "\n")
   where
     lockedAt (LockedHackage _ v _) = " " ++ v
@@ -93,11 +97,7 @@ installDep :: Maybe Locked -> Dep -> IO ()
 installDep (Just (LockedHackage n v h)) d = do
   -- the version of the lock, from Hackage, checked against its sha256
   home <- misoHome
-  tarball <- hackageTarball n v
-  h' <- sha256File tarball
-  when (h' /= h) $ do
-    run ("rm -f " ++ quote tarball)
-    failWith (n ++ "-" ++ v ++ ": the sha256 of the tarball is " ++ h' ++ ", " ++ lockFile ++ " has " ++ h)
+  tarball <- checkedTarball n v h
   let dir = home ++ "/src/hackage/" ++ n ++ "-" ++ v
   unpacked <- doesDirectoryExist dir
   unless unpacked $ run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
@@ -124,6 +124,16 @@ installDep Nothing d = do
         run ("git clone --quiet " ++ quote repo ++ " " ++ quote dir)
         maybe (pure ()) (\r -> run ("git -C " ++ quote dir ++ " checkout --quiet " ++ quote r)) (depRev d)
       run ("cd " ++ quote dir ++ " && " ++ mcabal)
+
+-- | The tarball of a locked Hackage version, checked against its sha256.
+checkedTarball :: String -> String -> String -> IO FilePath
+checkedTarball n v h = do
+  tarball <- hackageTarball n v
+  h' <- sha256File tarball
+  when (h' /= h) $ do
+    run ("rm -f " ++ quote tarball)
+    failWith (n ++ "-" ++ v ++ ": the sha256 of the tarball is " ++ h' ++ ", " ++ lockFile ++ " has " ++ h)
+  pure tarball
 
 -----------------------------------------------------------------------------
 -- miso add / remove: edit miso.yml (keeping its comments and layout)
@@ -310,3 +320,87 @@ updateDeps cfg = do
           step (depName d ++ ": comes with miso, not locked")
           pure []
       | otherwise = (: []) <$> resolveDep old d
+
+-----------------------------------------------------------------------------
+-- miso vendor
+
+vendorDir :: FilePath
+vendorDir = "vendor"
+
+-- | The file in a vendored package that says what it is.
+vendorStamp :: FilePath -> FilePath
+vendorStamp dir = dir ++ "/.miso-vendor"
+
+-- | What the stamp says: the source, and the version or commit.
+stampOf :: Locked -> String
+stampOf (LockedHackage n v h) = unwords ["hackage", n, v, h]
+stampOf (LockedGit n repo _ c _) = unwords ["git", n, repo, c]
+
+-- | Is the version of the lock in vendor/?
+isVendored :: Locked -> IO Bool
+isVendored l = do
+  let stamp = vendorStamp (vendorDir ++ "/" ++ lockedName l)
+  ok <- doesFileExist stamp
+  if ok then (== [stampOf l]) . lines <$> readFile' stamp else pure False
+
+-- | The directory a locked dependency is vendored in, if miso vendor put that
+-- version there.
+vendored :: Locked -> IO (Maybe FilePath)
+vendored l = do
+  let dir = vendorDir ++ "/" ++ lockedName l
+  ok <- isVendored l
+  other <- doesFileExist (vendorStamp dir)
+  when (not ok && other) $
+    warn (dir ++ " is not the version in " ++ lockFile ++ "; miso vendor copies it again")
+  pure (if ok then Just dir else Nothing)
+
+-- | miso vendor: lock the dependencies (as miso lock does), and copy the
+-- source of each Hackage and git dependency to vendor/NAME, which miso
+-- install then installs from, without Hackage or git.  Packages vendored
+-- before that are no longer dependencies are removed.  Local dependencies,
+-- and the packages that come with the tool, are not vendored (they are not
+-- locked); nor are the packages the dependencies depend on, which mcabal
+-- still installs from its package list.
+vendorDeps :: Config -> IO ()
+vendorDeps cfg = do
+  lockDeps cfg
+  lock <- maybe [] id <$> readLock
+  info ("Vendoring the dependencies in " ++ vendorDir ++ "/")
+  createDirectoryIfMissing True vendorDir
+  -- mcabal builds in the vendored directories
+  writeFile (vendorDir ++ "/.gitignore") "dist-mcabal/\n"
+  forM_ lock $ \l -> do
+    kept <- isVendored l
+    if kept then step (vendorDir ++ "/" ++ lockedName l ++ " (kept)") else vendorOne l
+  -- what miso vendor put there before, for dependencies that are gone
+  entries <- listDirectory vendorDir
+  forM_ [ e | e <- entries, e `notElem` map lockedName lock ] $ \e -> do
+    ours <- doesFileExist (vendorStamp (vendorDir ++ "/" ++ e))
+    when ours $ do
+      run ("rm -rf " ++ quote (vendorDir ++ "/" ++ e))
+      step ("- " ++ vendorDir ++ "/" ++ e)
+  if null lock
+    then success "No Hackage or git dependencies to vendor"
+    else success ("Vendored " ++ show (length lock) ++ " package" ++ (if length lock == 1 then "" else "s")
+                  ++ " in " ++ vendorDir ++ "/ (commit it; miso install installs from it)")
+  where
+    vendorOne l = do
+      let dir = vendorDir ++ "/" ++ lockedName l
+          tmp = vendorDir ++ "/.tmp-" ++ lockedName l
+      run ("rm -rf " ++ quote dir ++ " " ++ quote tmp)
+      createDirectoryIfMissing True tmp
+      case l of
+        LockedHackage n v h -> do
+          tarball <- checkedTarball n v h
+          run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote tmp)
+          run ("mv " ++ quote (tmp ++ "/" ++ n ++ "-" ++ v) ++ " " ++ quote dir)
+        LockedGit n repo _ c _ -> do
+          -- the files of the commit, without .git and what builds left there
+          src <- gitCheckout n repo c
+          run ("git -C " ++ quote src ++ " archive --format=tar " ++ quote c ++ " | tar -xf - -C " ++ quote tmp)
+          run ("mv " ++ quote tmp ++ " " ++ quote dir)
+      run ("rm -rf " ++ quote tmp)
+      writeFile (vendorStamp dir) (stampOf l ++ "\n")
+      step ("+ " ++ dir ++ " " ++ describe l)
+    describe (LockedHackage _ v _) = v
+    describe (LockedGit _ _ rev c _) = maybe "" (++ " ") rev ++ "(" ++ take 7 c ++ ")"

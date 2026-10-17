@@ -35,6 +35,7 @@ miso build            # public/index.js (target: browser)
 | `miso list` | the installed packages: those that come with miso, and those you installed |
 | `miso lock` | write `miso.lock`: lock what is not locked yet (new or changed in `miso.yml`), keep what is |
 | `miso update` | lock the Hackage and git dependencies in `miso.lock` (newest versions, current commits), and install them |
+| `miso vendor` | lock as `miso lock` does, and copy the source of each locked dependency to `vendor/NAME`; builds install from there, without Hackage or git |
 | `miso doctor` | check the installation and the tools miso needs, and say how to fix what is missing |
 | `miso upgrade [VERSION]` | install the latest release (or `VERSION`) in place |
 | `miso uninstall [--yes]` | remove miso: `$MISO_HOME` (packages, caches) and the tool where `install.sh` put it. It shows what it removes and asks first; it lists the lines of your shell files that add miso to `PATH` (it does not edit them) |
@@ -203,6 +204,26 @@ without a lock, with a warning; without a `miso.lock` nothing changes.
 
 Only the dependencies listed in `miso.yml` are locked: the packages they
 depend on are still installed by mcabal, from its package list.
+
+## vendor/
+
+`miso vendor` runs `miso lock`, then copies the source of each package in
+`miso.lock` to `vendor/NAME`: the Hackage tarball (checked against its
+sha256), unpacked, or the files of the git commit (`git archive`, so no
+`.git`).  Commit `vendor/` with `miso.lock`.
+
+- `miso build` and `miso install` install a locked dependency from
+  `vendor/NAME` when it has the version of `miso.lock` (each has a
+  `.miso-vendor` file saying which); otherwise, with a warning, from Hackage
+  or git as before.  Run `miso vendor` again after `miso update`.
+- A package that is kept is not copied again; one that is no longer a
+  dependency is removed from `vendor/`.  Other files there are left alone.
+- Do not edit the vendored sources: an installed package is not installed
+  again until its version changes.  For a patched copy, use a `path:`
+  dependency.
+- As with `miso.lock`, only the dependencies of `miso.yml` are vendored, not
+  the packages they depend on, nor local dependencies or the packages that
+  come with the tool.
 
 ## Requirements
 

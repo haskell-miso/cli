@@ -29,6 +29,17 @@ miso update
 grep -q '^    hackage: ' miso.lock || { echo "smoke test: miso update did not lock split" >&2; cat miso.lock >&2; exit 1; }
 out=$(miso run | tail -1 | tr -d '\r')
 [ "$out" = hello ] || { echo "smoke test: expected hello with miso.lock, got: $out" >&2; exit 1; }
+# miso vendor copies split to vendor/, and the build installs it from there
+# (without the Hackage tarball, and installed again: no miso-installed)
+miso vendor
+grep -q '^hackage split ' vendor/split/.miso-vendor || { echo "smoke test: miso vendor did not vendor split" >&2; ls -la vendor >&2; exit 1; }
+miso vendor | grep -q 'vendor/split (kept)' || { echo "smoke test: miso vendor copied split again" >&2; exit 1; }
+rm -rf "$MISO_HOME/src/hackage" "$(ls -d "$tmp"/miso-*)"/mhs-*/miso-installed
+miso run > vendor.log 2>&1 || { echo "smoke test: miso run failed with vendor/" >&2; cat vendor.log >&2; exit 1; }
+grep -q 'Installing split from vendor/split' vendor.log || { echo "smoke test: split was not installed from vendor/" >&2; cat vendor.log >&2; exit 1; }
+! ls "$MISO_HOME"/src/hackage/split-*.tar.gz >/dev/null 2>&1 ||{ echo "smoke test: split was downloaded despite vendor/" >&2; exit 1; }
+out=$(tail -1 vendor.log | tr -d '\r')
+[ "$out" = hello ] || { echo "smoke test: expected hello with vendor/, got: $out" >&2; exit 1; }
 # miso test: a test that passes and one that fails
 cat >> miso.yml <<'YML'
 tests:
