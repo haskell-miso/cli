@@ -50,8 +50,8 @@ miso build            # public/index.js (target: browser)
 | `miso install` | install the dependencies of `miso.yml` |
 | `miso add PKG...` / `miso remove PKG...` | edit the dependencies of `miso.yml` (keeping its comments), and install |
 | `miso list` | the installed packages: those that come with miso, and those miso install installed (in `$MISO_HOME/mcabal`) |
-| `miso lock` | write `miso.lock`: lock what is not locked yet (new or changed in `miso.yml`), keep what is |
-| `miso update` | lock the Hackage and git dependencies in `miso.lock` (newest versions, current commits), and install them |
+| `miso lock` | write `miso.lock`: the dependencies of `miso.yml` and the packages they need; lock what is not locked yet, keep what is |
+| `miso update` | a new package list for mcabal, and `miso.lock` again at its versions (git dependencies at their current commits); then install |
 | `miso vendor` | lock as `miso lock` does, and copy the source of each locked dependency to `vendor/NAME`; builds then install from there, and fail rather than download |
 | `miso doctor` | check the installation and the tools miso needs, and say how to fix what is missing |
 | `miso upgrade [VERSION]` | install the latest release (or `VERSION`) in place |
@@ -180,10 +180,11 @@ again.
 ## miso.lock
 
 `miso lock` and `miso update` write `miso.lock`, next to `miso.yml`; commit
-it.  It has, for each dependency from Hackage, a version and the sha256 of
-its tarball, and for each git dependency the commit its `rev` (a tag, a
-commit, or a branch) is at, and the version of the package there (from its
-`miso.yml`, or its `.cabal` file):
+it.  It has the dependencies of `miso.yml` and every package they need, in
+the order they install in (each after the packages it needs): for a package
+from Hackage, a version and the sha256 of its tarball, and for a git
+dependency the commit its `rev` (a tag, a commit, or a branch) is at, and the
+version of the package there (from its `miso.yml`, or its `.cabal` file):
 
 ```yaml
 # miso.lock: written by miso lock and miso update.  Commit it; do not edit it.
@@ -194,6 +195,12 @@ packages:
   - name: split
     hackage: 0.2.5.1
     sha256: 18adb60f7f12d08601c382d47c2bacbbd4de4b9233f09683889d15b64b6420d6
+  - name: data-default         # needed by data-default-class
+    hackage: 0.8.0.2
+    sha256: fa7d5de70ccef7381a7f17cd64948de1c24b620de13e1cd55c36c26949870799
+  - name: data-default-class
+    hackage: 0.2.0.0
+    sha256: 0ae530c4fb0bd6c8a8ba399429ccd9c75f9c7696049117178f4ceeb2bd08d5b4
   - name: lens-family
     git: https://github.com/example/lens-family
     rev: v2.1.3
@@ -201,26 +208,39 @@ packages:
     version: 2.1.3
 ```
 
+- The packages a package needs are the `build-depends` of its library and
+  executables, as mcabal reads them: for this OS and architecture, with the
+  dependency's `flags`, and with MicroHs's names (`random` is
+  `random-mhs`).  Their versions are those of mcabal's package list (a
+  Stackage snapshot, from `miso update`), as mcabal would install them; a
+  package that is not in it gets Hackage's newest version, and `miso lock`
+  says so.  The packages that come with the tool, and those built into
+  MicroHs (`base`, `text`, `bytestring`, ...), are not locked.
 - `miso lock` locks what is not in `miso.lock` yet (a dependency added to
-  `miso.yml`, or one whose `git`/`rev` changed) at its newest version, keeps
-  the entries that still match, and drops those of dependencies that are gone.
-- `miso update` moves every dependency to the newest Hackage version and the
-  current commit of its `rev`, and installs them.
+  `miso.yml`, one whose `git`/`rev` changed, or a package a new one needs),
+  keeps the packages that still match at their versions, and drops those no
+  longer needed.
+- `miso update` gets mcabal a new package list (the newest Stackage
+  snapshot), locks every package again at its version, and git
+  dependencies at the current commit of their `rev`, and installs them.
 - A git dependency needs a `rev:` (a tag, or a commit; a branch works but
   moves).  When the `rev` is a version tag (`v2.1.3` or `2.1.3`) that is not
   the version in the package's description, `miso lock` and `miso update`
   warn.
+- `miso.lock` is resolved on one OS: a package that only another OS needs
+  (`if os(windows)`, say) is not in it.
 
-`miso build` and `miso install` then install exactly that: the Hackage
-tarball of that version (checked against its sha256), and the git commit,
-until the next `miso lock` or `miso update`.  Local (`path:`) dependencies are not locked
-(they are installed from the directory on every build), and neither are the
-packages that come with the tool.  A dependency that is not in `miso.lock`
-(added to `miso.yml` since, or with a different `git`/`rev`) is installed as
-without a lock, with a warning; without a `miso.lock` nothing changes.
-
-Only the dependencies listed in `miso.yml` are locked: the packages they
-depend on are still installed by mcabal, from its package list.
+`miso build` and `miso install` then install exactly that, in its order:
+the Hackage tarball of each version (checked against its sha256), and the
+git commit, until the next `miso lock` or `miso update`; mcabal installs
+nothing a locked package needs by itself.  Local (`path:`) dependencies are
+not locked (they are installed from the directory on every build, after the
+locked packages, which include what they need), and neither are the packages
+that come with the tool.  A dependency that is not in `miso.lock` (added to
+`miso.yml` since, or with a different `git`/`rev`) is installed as without a
+lock, with a warning.  Without a `miso.lock`, mcabal installs each
+dependency with what it needs (`mcabal -r`), at the versions of its package
+list.
 
 ## vendor/
 
@@ -250,9 +270,9 @@ vendored:
   `vendor/.gitignore` ignores what mcabal builds there.
 - Do not edit the vendored sources; for a patched copy, use a `path:`
   dependency.
-- As with `miso.lock`, only the dependencies of `miso.yml` are vendored, not
-  the packages they depend on (mcabal still installs those from its package
-  list), nor local dependencies or the packages that come with the tool.
+- Every package of `miso.lock` is vendored: the dependencies of `miso.yml`
+  and the packages they need.  Local dependencies and the packages that come
+  with the tool are not.
   Removing `vendor/` makes the project an ordinary one again.
 
 ## Requirements

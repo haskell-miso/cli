@@ -1,0 +1,192 @@
+-- | What miso lock locks: the dependencies of miso.yml, and the packages
+-- they depend on, as mcabal would install them.
+--
+-- mcabal installs a package by name at the version of its package list (a
+-- Stackage snapshot, from mcabal update), and in a package's directory
+-- installs nothing it depends on.  So miso locks the whole tree: for each
+-- package, the build-depends of its library and executables (for this OS,
+-- with MicroHs's names: random is random-mhs), at the versions of the
+-- package list (or, for a package that is not in it, Hackage's newest), and
+-- installs them in order, each after what it needs.  The packages that come
+-- with the tool, and those built into MicroHs, are not locked.
+module Miso.CLI.Resolve
+  ( resolveTree
+  , mcabalNames
+  , builtInNames
+  , bundledNames
+  ) where
+
+import Control.Exception (SomeException, evaluate, try)
+import Control.Monad (filterM, forM_, unless)
+import Data.IORef (modifyIORef, newIORef, readIORef)
+import Data.List (intercalate, isPrefixOf, nub)
+import Data.Version (showVersion)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import qualified System.Info as Info
+
+import qualified MicroCabal.Cabal as MC
+import qualified MicroCabal.Env as MC
+import qualified MicroCabal.Main as MC
+import qualified MicroCabal.Parse as MC
+import qualified MicroCabal.StackageList as MC
+
+import Miso.CLI.Color
+import Miso.CLI.Config
+import Miso.CLI.Lock
+import Miso.CLI.Util
+
+-- | mcabal's environment, with the MicroHs backend (miso mhs).
+mcabalEnv :: IO MC.Env
+mcabalEnv = do
+  setupEnv
+  env <- MC.setupEnv
+  -- quiet: mcabal says "Changing package random to random-mhs" otherwise
+  pure env { MC.verbose = -1 }
+
+-- | The name mcabal installs a package by (random is random-mhs).
+patchedName :: MC.Env -> String -> String
+patchedName env n = fst (MC.patchName (MC.backend env) env (n, MC.makeVersion []))
+
+-- | mcabal's names, for matching miso.yml's dependencies with miso.lock's
+-- packages.  (It runs miso mhs, so it is only asked for when needed.)
+mcabalNames :: IO (String -> String)
+mcabalNames = patchedName <$> mcabalEnv
+
+-- | Which of these packages need no installing, as MicroHs has them built in
+-- (text, bytestring, ...) or they come with the tool.  (It runs miso mhs, so
+-- it is only asked for when needed.)
+builtInNames :: [String] -> IO [String]
+builtInNames ns = do
+  env <- mcabalEnv
+  bundled <- bundledNames
+  filterM (fmap not . needsInstall env bundled . patchedName env) ns
+
+-- | The names of the packages that come with the tool.
+bundledNames :: IO [String]
+bundledNames = do
+  db <- toolDb
+  let listed = db ++ "/miso-bundled"
+      dir = db ++ "/packages"
+  hasList <- doesFileExist listed
+  hasDir <- doesDirectoryExist dir
+  pkgs <- if hasList then lines <$> readFile' listed
+          else if hasDir then filter (".pkg" `isSuffixOf'`) <$> listDirectory dir
+          else pure []
+  pure [ nameOf p | p <- pkgs, ".pkg" `isSuffixOf'` p ]
+  where
+    -- name-1.2.3.pkg
+    nameOf p = reverse (drop 1 (dropWhile (/= '-') (reverse (take (length p - 4) p))))
+
+-- | Does a package need installing: not one of the tool's, nor one built
+-- into MicroHs (base, text, bytestring, ...)?  A package installed in
+-- $MISO_HOME (by another project) still needs it, on another machine.
+needsInstall :: MC.Env -> [String] -> String -> IO Bool
+needsInstall env bundled n
+  | n `elem` bundled = pure False
+  | otherwise = do
+      available <- MC.doesPkgExist (MC.backend env) env n
+      if not available then pure True else installedHere
+  where
+    installedHere = do
+      d <- (++ "/packages") <$> pkgDir
+      ok <- doesDirectoryExist d
+      ps <- if ok then listDirectory d else pure []
+      pure (any isOurs ps)
+    -- n-1.2.3.pkg (and not n-foo-1.2.3.pkg)
+    isOurs p = (n ++ "-") `isPrefixOf` p && ".pkg" `isSuffixOf'` p
+               && all (`elem` "0123456789.") (drop (length n + 1) (take (length p - 4) p))
+
+-- | The packages a package needs: the build-depends of its libraries and
+-- executables that are buildable, for this OS, architecture and compiler
+-- and the cabal flags given, with MicroHs's names, as mcabal reads them;
+-- not the package's own (internal) libraries.
+packageDeps :: MC.Env -> [(String, Bool)] -> String -> FilePath -> IO [String]
+packageDeps env fl why dir = do
+  cabals <- filter (".cabal" `isSuffixOf'`) <$> listDirectory dir
+  f <- case cabals of
+         [f] -> pure f
+         [] -> failWith (dir ++ " has no .cabal file")
+         _ -> failWith (dir ++ " has several .cabal files")
+  s <- readFile' (dir ++ "/" ++ f)
+  let info = MC.FlagInfo { MC.os = Info.os, MC.arch = Info.arch, MC.flags = fl
+                         , MC.impl = MC.backendNameVers (MC.backend env) }
+      cbl = MC.normalizeAndPatch env info (MC.parseCabal f s)
+      MC.Cabal sects = cbl
+      sects' = MC.addMissing sects
+      own = MC.getCabalName cbl : [ n | MC.Section t n _ <- sects', t `elem` ["library", "foreign-library"] ]
+      deps = [ p | sect@(MC.Section t _ flds) <- sects', t `elem` ["library", "foreign-library", "executable"]
+                 , MC.isBuildable sect, (p, _, _) <- MC.getBuildDepends flds ]
+  -- mcabal's parser fails with error: say which package, and why it is needed
+  r <- try (evaluate (forceList (nub [ p | p <- deps, p `notElem` own ])))
+  case r of
+    Right ps -> pure ps
+    Left e -> failWith ("could not read " ++ dir ++ "/" ++ f ++ why ++ ": " ++ show (e :: SomeException))
+  where forceList xs = sum (map length xs) `seq` xs
+
+-- | Lock the dependencies of miso.yml and what they depend on, in the order
+-- they install in (each package after the packages it needs).  With keep (miso
+-- lock), a package miso.lock has stays at its version; otherwise (miso
+-- update) it moves to the version of the package list.  Local dependencies
+-- are not locked, but what they need is.
+resolveTree :: Bool -> [Locked] -> Config -> IO [Locked]
+resolveTree keep old cfg = do
+  env <- mcabalEnv
+  -- mcabal's package list (it runs mcabal update if there is none)
+  snapshot <- map (\p -> (MC.stName p, showVersion (MC.stVersion p))) <$> MC.getPackageList env
+  bundled <- bundledNames
+  home <- misoHome
+  state <- newIORef ([], [])            -- the packages seen, and the lock (reversed)
+  let pn = patchedName env
+      roots = allDeps cfg
+      flagsOf d = maybe [] MC.decodeCabalFlags (depFlags d)
+      emit l = modifyIORef state (\(seen, out) -> (seen, l : out))
+      -- why a package is needed: "(needed by fail, needed by transformers-compat, ...)"
+      why chain = if null chain then "" else " (needed by " ++ intercalate ", needed by " chain ++ ")"
+      -- a package, by mcabal's name: one of miso.yml, or one a package needs
+      -- (chain: the packages that need it, nearest first)
+      visit chain n = do
+        (seen, _) <- readIORef state
+        unless (n `elem` seen) $ do
+          modifyIORef state (\(s, out) -> (n : s, out))
+          case [ d | d <- roots, pn (depName d) == n ] of
+            d : _ | Just dir <- depPath d -> do
+              ok <- doesDirectoryExist dir
+              unless ok $ failWith ("dependency " ++ depName d ++ ": no directory " ++ dir)
+              packageDeps env (flagsOf d) (why chain) dir >>= mapM_ (visit (n : chain))
+            d : _ | isGit d -> do
+              l <- maybe (resolveGit d) pure (if keep then lockedFor pn old d else Nothing)
+              dir <- gitCheckout (lkName l) (lkRepo l) (lkCommit l)
+              packageDeps env (flagsOf d) (why chain) dir >>= mapM_ (visit (n : chain))
+              emit l
+            mroot -> do
+              need <- needsInstall env bundled n
+              if not need then pure () else do
+                l <- lockHackage snapshot chain n
+                let LockedHackage _ v h = l
+                    dir = home ++ "/src/hackage/" ++ n ++ "-" ++ v
+                unpacked <- doesDirectoryExist dir
+                unless unpacked $ do
+                  tarball <- hackageTarball n v
+                  h' <- sha256File tarball
+                  unless (h' == h) $ failWith (n ++ "-" ++ v ++ ": the sha256 of the tarball is " ++ h' ++ ", " ++ lockFile ++ " has " ++ h)
+                  run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
+                packageDeps env (concatMap flagsOf (take 1 mroot)) (why chain) dir >>= mapM_ (visit (n : chain))
+                emit l
+      -- a Hackage package: kept from miso.lock, or at the package list's version
+      lockHackage snapshot chain n = do
+        let prev = [ l | l@(LockedHackage m _ _) <- old, m == n ]
+        case prev of
+          l : _ | keep -> pure l
+          _ -> do
+            v <- case lookup n snapshot of
+                   Just v -> pure v
+                   Nothing -> do
+                     step (n ++ " is not in mcabal's package list: Hackage's newest" ++ why chain)
+                     newestVersion n
+            case [ l | l@(LockedHackage _ v' _) <- prev, v' == v ] of
+              l : _ -> pure l
+              [] -> do
+                f <- hackageTarball n v
+                LockedHackage n v <$> sha256File f
+  forM_ roots $ \d -> visit [] (pn (depName d))
+  reverse . snd <$> readIORef state
