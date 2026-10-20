@@ -3,8 +3,9 @@ module Miso.CLI.Doctor (doctor) where
 
 import Control.Monad (forM_, when)
 import Data.IORef
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, nub)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+import System.IO (hFlush, stdout)
 
 
 import MicroHs.Compile (mhsVersion)
@@ -60,6 +61,8 @@ doctor = do
   if hasHlint then ok "hlint (for miso lint)" else note "hlint is not installed (needed for miso lint)"
   hasGit <- have "git"
   if hasGit then ok "git (for git dependencies)" else note "git is not installed (needed for git dependencies)"
+  hasEmcc <- have "emcc"
+  if hasEmcc then ok "emcc (for the browser targets)" else note ("emcc is not installed (needed for the browser targets): " ++ emsdk)
   when windows $ do
     hasSh <- have "sh"
     check hasSh "sh (MSYS2)" "run miso in an MSYS2 shell"
@@ -80,17 +83,23 @@ doctor = do
           ok ("test " ++ exeName t ++ " (" ++ exeMain t ++ " in " ++ unwords (exeSourceDirs t) ++ ")")
         dirs <- mapM doesDirectoryExist (allSourceDirs cfg)
         check (and dirs) ("source dirs: " ++ unwords (allSourceDirs cfg)) "a source dir of miso.yml does not exist"
-        let browser = any (maybe False (`elem` ["browser", "browser_js"]) . exeTarget) (cfgExecutables cfg)
-        when browser $ do
-          hasEmcc <- have "emcc"
-          check hasEmcc "emcc (target: browser)" "install emscripten: https://emscripten.org/docs/getting_started/downloads.html"
+        forM_ (nub [ t | Just t <- map exeTarget (cfgExecutables cfg), t `elem` emccTargets ]) $ \t ->
+          check hasEmcc ("emcc (target: " ++ t ++ ")") ("install emscripten: " ++ emsdk)
         locals <- mapM (\d -> maybe (pure True) doesDirectoryExist (depPath d)) (allDeps cfg)
         check (and locals) "local dependencies" "a path: dependency of miso.yml does not exist"
         when (any ((/= Nothing) . depGit) (allDeps cfg)) $
           check hasGit "git (git dependencies)" "install git"
 
   n <- readIORef problems
+  hFlush stdout   -- the checks before the error, when stdout is not a terminal
   if n == 0
     then success "Everything is fine"
     else do
       failWith (show n ++ " problem" ++ (if n == 1 then "" else "s") ++ " found")
+
+-- | The mhs targets that compile with emcc (see mhs.conf).
+emccTargets :: [String]
+emccTargets = ["browser", "browser_js", "browser_rts", "emscripten"]
+
+emsdk :: String
+emsdk = "https://emscripten.org/docs/getting_started/downloads.html"
