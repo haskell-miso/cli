@@ -107,13 +107,13 @@ usage = do
     , cmd "watch [NAME]" "type check on every change, and show the first error"
     , cmd "lint [ARGS]" "run hlint on the project's sources (.hlint.yaml configures it)"
     , cmd "repl" "mhs, interactively, with the project's sources"
-    , cmd "clean" "remove what builds make (dist/, public/, caches)"
+    , cmd "clean" "remove what builds make (dist/, public/, .miso/, caches)"
     ]
   ds <- sequence
-    [ cmd "install" "install the dependencies of miso.yml"
+    [ cmd "install" "install the dependencies of miso.yml (in .miso/)"
     , cmd "add PKG..." "add dependencies to miso.yml, and install them"
     , cmd "remove PKG..." "remove dependencies from miso.yml"
-    , cmd "list" "list the installed packages"
+    , cmd "list" "list the packages: the tool's, and the project's"
     , cmd "lock" "write miso.lock, keeping the versions locked already"
     , cmd "update" "lock Hackage and git dependencies in miso.lock, and install them"
     , cmd "vendor" "copy the locked dependencies' sources to vendor/, to build from"
@@ -156,18 +156,15 @@ port as =
 -----------------------------------------------------------------------------
 -- The embedded tools
 
--- | mhs, also finding the packages in $MISO_HOME/mcabal.  (The packages of
--- the tool, and those miso install installs, are found next to the
--- executable.)  A bare -a clears the package path, so it is left alone.
+-- | mhs, finding the packages of the project (in its .miso/) and then the
+-- tool's (Miso.CLI.Util.packagePath).  Other -a arguments add to that (mcabal
+-- adds -a.); a bare -a clears the package path, so it is left alone.
 runMhs :: [String] -> IO ()
 runMhs as = do
   c_lineBuffered
   setupCpphs
-  pd <- pkgDir
-  createDirectoryIfMissing True pd
-  let as' | "-a" `elem` as || ("-a" ++ pd) `elem` as = as
-          | otherwise = ("-a" ++ pd) : as
-  withArgs as' MHS.main
+  path <- packagePath
+  withArgs (if "-a" `elem` as then as else path ++ as) MHS.main
 
 runMcabal :: [String] -> IO ()
 runMcabal as = setupEnv >> withArgs as MCabal.main
@@ -229,7 +226,7 @@ test as cfg = do
 
 clean :: IO ()
 clean = do
-  let dirs = ["dist", "public", ".mhscache", "dist-mcabal", ".miso-build.log"]
+  let dirs = ["dist", "public", ".mhscache", "dist-mcabal", ".miso-build.log", ".miso"]
   there <- filterM' (\p -> (||) <$> doesDirectoryExist p <*> doesFileExist p) dirs
   if null there
     then step "nothing to clean"

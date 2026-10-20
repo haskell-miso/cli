@@ -1,7 +1,7 @@
 -- | miso doctor: check what miso needs, and say how to fix what is missing.
 module Miso.CLI.Doctor (doctor) where
 
-import Control.Monad (forM_, when)
+import Control.Monad (filterM, forM_, when)
 import Data.IORef
 import Data.List (isPrefixOf, nub)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
@@ -43,7 +43,15 @@ doctor = do
   mhome <- misoHome
   createDirectoryIfMissing True mhome
   writable <- tryRun ("test -w " ++ quote mhome ++ " && test -w " ++ quote home)
-  check writable ("writable: " ++ mhome) ("miso installs packages there; fix its permissions")
+  check writable ("writable: " ++ mhome) ("miso keeps downloads and built packages there; fix its permissions")
+  -- packages installed where every project shared them, before each had its own .miso/
+  olds <- filterM (\d -> (\fs -> any (".pkg" `isSuffixOf'`) fs) <$> listDirectory (mhome ++ "/mcabal/" ++ d ++ "/packages"))
+            =<< (do e <- doesDirectoryExist (mhome ++ "/mcabal")
+                    if e then filterM (\d -> doesDirectoryExist (mhome ++ "/mcabal/" ++ d ++ "/packages"))
+                                 . filter ("mhs-" `isPrefixOf`) =<< listDirectory (mhome ++ "/mcabal")
+                         else pure [])
+  forM_ olds $ \d ->
+    note (mhome ++ "/mcabal/" ++ d ++ " has packages from before each project had its own .miso/; miso no longer uses them (rm -rf it)")
 
   info "Tools"
   let cc = if windows then "gcc" else "cc"
@@ -85,6 +93,13 @@ doctor = do
         check (and dirs) ("source dirs: " ++ unwords (allSourceDirs cfg)) "a source dir of miso.yml does not exist"
         forM_ (nub [ t | Just t <- map exeTarget (cfgExecutables cfg), t `elem` emccTargets ]) $ \t ->
           check hasEmcc ("emcc (target: " ++ t ++ ")") ("install emscripten: " ++ emsdk)
+        mdb <- pkgDir
+        case mdb of
+          Just pd -> do
+            has <- doesDirectoryExist (pd ++ "/packages")
+            n <- if has then length . filter (".pkg" `isSuffixOf'`) <$> listDirectory (pd ++ "/packages") else pure 0
+            ok (".miso/: " ++ show n ++ " package" ++ (if n == 1 then "" else "s") ++ " installed (miso list shows them)")
+          Nothing -> pure ()
         locals <- mapM (\d -> maybe (pure True) doesDirectoryExist (depPath d)) (allDeps cfg)
         check (and locals) "local dependencies" "a path: dependency of miso.yml does not exist"
         when (any ((/= Nothing) . depGit) (allDeps cfg)) $

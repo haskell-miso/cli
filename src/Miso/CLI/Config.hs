@@ -14,6 +14,8 @@
 -- >     flags: -foo +bar
 -- >   - name: my-lib           # a local checkout (relative to miso.yml)
 -- >     path: ../my-lib
+-- >   - name: aeson            # a version from Hackage (not the package list's)
+-- >     version: 2.2.3.0
 --
 -- main, source-dirs and target there are a shorthand for a project with one
 -- program.  A project with a library, or with several programs, has
@@ -45,6 +47,10 @@
 -- >     dependencies: [split]
 --
 -- miso itself, and base, containers, mtl, ... come installed with the tool.
+-- A dependency on one of those with a source (git:, path:, or a version:
+-- that is not the tool's) is installed in the project instead, and the
+-- tool's packages that need it are built again against it (Miso.CLI.Deps).
+-- The packages a project installs go in its .miso/.
 --
 -- Only the part of YAML these files need is supported: mappings, lists
 -- (block and [a, b]), scalars, and comments.
@@ -200,6 +206,7 @@ data Dep = Dep
   , depPath  :: Maybe FilePath      -- ^ a local directory (otherwise from Hackage)
   , depRev   :: Maybe String        -- ^ a git revision
   , depFlags :: Maybe String        -- ^ cabal flags, as for mcabal -f
+  , depVersion :: Maybe String      -- ^ a Hackage version (otherwise the package list's)
   } deriving (Show, Eq)
 
 -- | Where a dependency comes from: a local directory, git, or Hackage.
@@ -435,21 +442,24 @@ depsOf (List vs) = mapM dep vs
 depsOf v = Left ("miso.yml: dependencies should be a list, found " ++ show v)
 
 dep :: Value -> Either String Dep
-dep (Str s) = Right (Dep s Nothing Nothing Nothing Nothing)
+dep (Str s) = Right (Dep s Nothing Nothing Nothing Nothing Nothing)
 dep (Map kvs) = do
   name <- maybe (Left "miso.yml: a dependency without a name") str (lookup "name" kvs)
   git <- opt "git"
   path <- opt "path"
   rev <- opt "rev"
   flags <- opt "flags"
+  ver <- opt "version"
   mapM_ known (map fst kvs)
   case (git, path) of
     (Just _, Just _) -> Left ("miso.yml: dependency " ++ name ++ " has both git and path")
+    _ | ver /= Nothing && (git /= Nothing || path /= Nothing) ->
+          Left ("miso.yml: dependency " ++ name ++ ": version: is for a package from Hackage (a git or path dependency has the version of its source)")
     -- without one the build would depend on what the branch is at
     (Just _, _) | rev == Nothing -> Left ("miso.yml: git dependency " ++ name ++ " needs rev: (a tag, or a commit)")
-    _ -> Right (Dep name git path rev flags)
+    _ -> Right (Dep name git path rev flags ver)
   where
     opt k = maybe (Right Nothing) (fmap Just . str) (lookup k kvs)
-    known k | k `elem` ["name", "git", "path", "rev", "flags"] = Right ()
+    known k | k `elem` ["name", "git", "path", "rev", "flags", "version"] = Right ()
             | otherwise = Left ("miso.yml: unknown dependency field " ++ k)
 dep v = Left ("miso.yml: bad dependency " ++ show v)

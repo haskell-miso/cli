@@ -11,27 +11,39 @@ module Miso.CLI.Deps
   , removeFromYml
   ) where
 
-import Control.Monad (forM, forM_, unless, when)
+import Control.Monad (filterM, foldM, forM, forM_, unless, when)
 import Data.Char (isSpace)
-import Data.List (isPrefixOf, sort)
+import Data.List (intercalate, isPrefixOf, nub, sort, sortBy)
+import Data.Ord (comparing)
 import Data.Maybe (isJust)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+
+import qualified MicroCabal.Main as MC
+import MicroHs.Compile (mhsVersion)
 
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Lock
 import Miso.CLI.Resolve
+import Miso.CLI.Store
 import Miso.CLI.Util
 
--- | The record of what miso install installed, kept with the packages it
--- installs (not next to the tool, which may be read-only, as in the nix
--- store).  It is per release, so a new one installs them again.
-stampFile :: IO FilePath
-stampFile = (\d -> d ++ "/miso-installed-" ++ version) <$> pkgDir
+-- | The record of what miso install installed in the project: a line per
+-- package (its store ID, or for a local one its directory and files), kept
+-- in the project's package database, so removing .miso/ installs again.  It
+-- is per release, so a new one installs them again.
+stampFile :: FilePath -> FilePath
+stampFile db = db ++ "/miso-installed-" ++ version
 
-readStamp :: IO [String]
-readStamp = do
-  f <- stampFile
+-- | What the dependencies were when they were last installed (miso.yml's,
+-- miso.lock, the tool's packages, vendor/): with no local dependency, if
+-- that is the same nothing needs installing.
+planFile :: FilePath -> FilePath
+planFile db = db ++ "/miso-plan-" ++ version
+
+readStamp :: FilePath -> IO [String]
+readStamp db = do
+  let f = stampFile db
   ok <- doesFileExist f
   if ok then lines <$> readFile' f else pure []
 
@@ -45,112 +57,326 @@ mcabalInstall recursive d = do
   pure (quote exe ++ " mcabal" ++ (if recursive then " -r" else "")
         ++ maybe "" (\f -> " -f" ++ quote f) (depFlags d) ++ " install")
 
--- | Install the dependencies that are not installed yet.  A local checkout
--- is installed on every build, as it changes; the others once.  With a
--- miso.lock, its packages (those of miso.yml, and what they need) are
--- installed at its versions and commits, in its order, each after what it
--- needs; then the local dependencies, and those it does not lock (which
--- mcabal installs with what they need).  In a vendored project
--- (vendor/.miso-vendor) the locked packages are installed from vendor/, and
--- one that is not there as miso vendor copied it is an error, not a
--- download.
+-- | A package to install in the project.
+data Unit = Unit
+  { uDep    :: Dep              -- ^ as miso.yml has it (or the lock, for what they need)
+  , uLocked :: Maybe Locked     -- ^ its entry in miso.lock
+  , uTool   :: Maybe Bundled    -- ^ a library of the tool, built again from its source
+  , uDir    :: Maybe FilePath   -- ^ its source (Nothing: mcabal -r installs it by name)
+  , uWhere  :: Maybe String     -- ^ where it comes from, to say so
+  }
+
+-- | Install the dependencies that are not installed yet, in the project's
+-- .miso/.  A local checkout is installed again when its files change; the
+-- others once.  With a miso.lock, its packages (those of miso.yml, and what
+-- they need) are installed at its versions and commits; then the local
+-- dependencies, and those it does not lock (which mcabal installs with what
+-- they need).  Each package is installed after the ones it needs.  In a
+-- vendored project (vendor/.miso-vendor) the locked packages are installed
+-- from vendor/, and one that is not there as miso vendor copied it is an
+-- error, not a download.
+--
+-- A dependency that replaces a package of the tool is installed in the
+-- project, and the tool's libraries that need it are built again there,
+-- from their source, against it.  A package built from a known source (not
+-- a local directory, nor something built against one) is kept in the store
+-- (Miso.CLI.Store), and copied from there when another project needs it.
 installDeps :: Config -> IO ()
 installDeps cfg = do
   setupEnv
+  root <- projectRoot >>= maybe (failWith ("no " ++ configFile ++ " here")) pure
+  let db = projectDb root
   lock <- readLock
-  bundled <- bundledNames
+  tool <- bundledPackages
+  replaced <- filterM (isReplacement tool) (allDeps cfg)
+  let replacedNames = map depName replaced
+      -- the packages of the tool the project uses (not those it replaces)
+      bundled = [ bName b | b <- tool, bName b `notElem` replacedNames ]
   vend <- readVendor
+  -- the plan: if nothing changed since the last install, nothing to do
+  lockText <- readIfThere lockFile
+  vendText <- readIfThere vendorFile
+  let planKey = unlines ([ "miso " ++ version, "mhs " ++ mhsVersion, lockText, vendText ]
+                         ++ map show (allDeps cfg) ++ map bFile tool)
+      hasLocal = any isLocal (allDeps cfg)
+  oldPlan <- readIfThere (planFile db)
+  if not hasLocal && oldPlan == planKey && not (null oldPlan)
+    then step "dependencies are installed"
+    else do
+      checkBundledVersions tool replacedNames
+      installPlan False cfg db lock tool replaced bundled vend
+      writeFile (planFile db) planKey
+  where
+    readIfThere f = do
+      ok <- doesFileExist f
+      if ok then readFile' f else pure ""
+
+-- | Warn when the tool's libraries are not the versions miso.lock was
+-- written with (another release of the tool).
+checkBundledVersions :: [Bundled] -> [String] -> IO ()
+checkBundledVersions tool replacedNames = do
+  locked <- readLockBundled
+  let now = [ bName b ++ "-" ++ bVersion b | b <- tool, bSource b /= Nothing, bName b `notElem` replacedNames ]
+  case locked of
+    Just was | sort was /= sort now -> do
+      let changed = [ n ++ ": " ++ maybe "-" id (lookup n (pairs was)) ++ " -> " ++ maybe "-" id (lookup n (pairs now))
+                    | n <- nub (map fst (pairs was) ++ map fst (pairs now))
+                    , lookup n (pairs was) /= lookup n (pairs now) ]
+      warn ("this miso comes with other versions of its libraries than " ++ lockFile ++ " was written with ("
+            ++ intercalate ", " changed ++ "); the project builds with this miso's.  miso lock records them; "
+            ++ "to keep one, add it to miso.yml with its version: (- name: miso, version: ...)")
+    _ -> pure ()
+  where
+    pairs = map (\nv -> let (rv, rn) = break (== '-') (reverse nv) in (reverse (drop 1 rn), reverse rv))
+
+-- | Install with a lock: miso.lock, or (resolved) one made for this
+-- install, with the dependencies miso.lock does not lock too.
+installPlan :: Bool -> Config -> FilePath -> Maybe [Locked] -> [Bundled] -> [Dep] -> [String] -> Maybe [(String, (String, String))] -> IO ()
+installPlan resolved cfg db lock tool replaced bundled vend = do
   -- mcabal's names (random is locked as random-mhs), asked for only when a
   -- dependency of miso.yml is not in the lock by its own name
-  let unmatched = [ d | Just l <- [lock], d <- allDeps cfg, not (isLocal d)
+  let replacedNames = map depName replaced
+      unmatched = [ d | Just l <- [lock], d <- allDeps cfg, not (isLocal d)
                       , depName d `notElem` bundled, depName d `notElem` map lockedName l ]
   pn <- if null unmatched then pure id else mcabalNames
   let locked d = maybe Nothing (\l -> lockedFor pn l d) lock
       -- a package of the lock: a dependency of miso.yml, or one they need
       depOf l = case [ d | d <- allDeps cfg, locked d == Just l ] of
                   d : _ -> d
-                  [] -> Dep { depName = lockedName l, depGit = Nothing, depPath = Nothing, depRev = Nothing, depFlags = Nothing }
-      -- (the packages that come with the tool are not installed)
+                  [] -> Dep { depName = lockedName l, depGit = Nothing, depPath = Nothing, depRev = Nothing, depFlags = Nothing, depVersion = Nothing }
   -- a dependency of miso.yml that MicroHs has built in (text, bytestring,
   -- ...) is neither locked nor installed; mcabal is asked which, for those
   -- the lock lacks
-  let maybeBuiltIn = [ depName d | d <- allDeps cfg, isHackage d, depName d `notElem` bundled, locked d == Nothing ]
+  let maybeBuiltIn = [ depName d | d <- allDeps cfg, isHackage d, depName d `notElem` bundled
+                                 , depName d `notElem` replacedNames, locked d == Nothing ]
   builtIn <- if null maybeBuiltIn then pure [] else builtInNames maybeBuiltIn
   let unlocked = [ d | d <- allDeps cfg, locked d == Nothing, isLocal d || depName d `notElem` (bundled ++ builtIn) ]
       -- an entry of the lock for a dependency of miso.yml that has changed
       -- (another git rev, or now local) is not installed: the dependency is,
-      -- as unlocked, until miso lock
+      -- as unlocked, until miso lock; nor one for a package of the tool that
+      -- miso.yml no longer replaces
       stale l = or [ locked d /= Just l | d <- allDeps cfg, lockedName l `elem` [depName d, pn (depName d)] ]
+                || lockedName l `elem` bundled
       items = [ (depOf l, Just l) | l <- maybe [] id lock, not (stale l) ] ++ [ (d, Nothing) | d <- unlocked ]
   -- a dependency the lock does not have: a warning, or in a vendored
   -- project an error, before anything is installed
-  case (lock, vend) of
-    (Nothing, Just _) | not (null [ d | d <- unlocked, not (isLocal d) ]) ->
+  let unlockedRemote = [ d | d <- unlocked, not (isLocal d) ]
+  unless resolved $ case (lock, vend) of
+    (Nothing, Just _) | not (null unlockedRemote) ->
       failWith ("this project is vendored, but has no " ++ lockFile ++ ": miso vendor locks and vendors its dependencies")
     (_, Just _) ->
-      forM_ [ d | d <- unlocked, not (isLocal d) ] $ \d ->
+      forM_ unlockedRemote $ \d ->
         failWith (depName d ++ " is not locked in " ++ lockFile ++ ", and this project is vendored: miso vendor locks and vendors it")
     (Just _, Nothing) ->
-      forM_ [ d | d <- unlocked, not (isLocal d) ] $ \d ->
+      forM_ unlockedRemote $ \d ->
         warn (depName d ++ " is not locked in " ++ lockFile ++ " (new, or changed in miso.yml); miso lock locks it")
     _ -> pure ()
-  done <- readStamp
-  stamp <- stampFile
-  createDirectoryIfMissing True (parent stamp)
-  -- the stamp of a locked package has its version or commit: a new lock installs it again
-  let key d ml = show d ++ maybe "" (\l -> " " ++ show l) ml
-      todo = [ (d, ml) | (d, ml) <- items, isLocal d || key d ml `notElem` done ]
+  -- what miso.lock does not lock is locked for this install, as miso lock
+  -- would (without writing miso.lock): its versions and what they need are
+  -- then known, so each is installed after what it needs, and kept in the
+  -- store
+  if not resolved && not (null unlockedRemote)
+    then do
+      step ("resolving " ++ intercalate ", " (map depName unlockedRemote) ++ " (miso lock writes " ++ lockFile ++ ")")
+      new <- resolveTree True (maybe [] id lock) cfg
+      installPlan True cfg db (Just new) tool replaced bundled vend
+    else installLocked cfg db lock tool replaced items pn
+
+installLocked :: Config -> FilePath -> Maybe [Locked] -> [Bundled] -> [Dep] -> [(Dep, Maybe Locked)] -> (String -> String) -> IO ()
+installLocked _ db _ tool replaced items _ = do
+  let replacedNames = map depName replaced
+  vend <- readVendor
+  root <- projectRoot >>= maybe (failWith ("no " ++ configFile ++ " here")) pure
+  -- the libraries of the tool that need a package miso.yml replaces
+  rebuilt <- if null replaced then pure []
+             else dependentsOf [ b | b <- tool, bSource b /= Nothing ] replacedNames
+  -- the tool's packages, without the ones the project replaces or builds
+  -- again (each package is in one database of mhs's path)
+  toolView root tool (replacedNames ++ map bName rebuilt)
+  -- where each one's source is (fetched now: what it needs, and its ID,
+  -- come from it)
+  units0 <- forM items $ \(d, ml) -> do
+    (dir, from) <- sourceOf vend d ml
+    pure (Unit d ml Nothing dir from)
+  units1 <- forM rebuilt $ \b -> do
+    dir <- bundledSourceDir b
+    let d = Dep (bName b) Nothing Nothing Nothing (bFlags b) Nothing
+    pure (Unit d Nothing (Just b) (Just dir) Nothing)
+  env <- mcabalEnv
+  pnEnv <- mcabalNames
+  needs <- forM (units0 ++ units1) $ \u -> do
+    ds <- case uDir u of
+      Just dir -> packageDeps env (maybe [] MC.decodeCabalFlags (depFlags (uDep u))) "" dir
+      Nothing -> pure []
+    pure (u, ds)
+  let nameOf u = maybe (pnEnv (depName (uDep u))) lockedName (uLocked u)
+      ordered = order [] needs
+      -- each after the ones it needs (among these); the rest in their order
+      order done [] = reverse done
+      order done todo =
+        case [ x | x@(_, ds) <- todo, all (\n -> n `notElem` map (nameOf . fst) todo) ds ] of
+          x : _ -> order (x : done) [ y | y <- todo, nameOf (fst y) /= nameOf (fst x) ]
+          [] -> reverse done ++ todo
+  -- the IDs: what each package is built from, with the IDs of what it needs
+  toolIds <- forM tool $ \b -> (,) (bName b) <$> toolPkgId b
+  ids <- foldM (\acc (u, ds) -> do
+                  k <- unitKey acc toolIds u ds
+                  pure (acc ++ [(nameOf u, k)])) [] ordered
+  createDirectoryIfMissing True db
+  -- a package of the tool the project no longer replaces or builds again
+  -- (miso.yml changed) goes, and with it what says it was installed
+  let mine = replacedNames ++ map bName rebuilt
+      dropped = [ bName b | b <- tool, bName b `notElem` mine ]
+  forM_ dropped $ \n -> removeOtherVersions db n ""
+  done0 <- readStamp db
+  let done = [ k | k <- done0, not (any (\n -> (n ++ "-") `isPrefixOf` k) dropped) ]
+  -- (a local package is installed again when its files change)
+  let todo = [ (u, k) | ((u, _), (_, k)) <- zip ordered ids, keyStamp k `notElem` done ]
   if null todo
     then step "dependencies are installed"
-    else forM_ todo $ \(d, ml) -> do
-      v <- case vend of
-        Just vs | not (isLocal d), depName d `notElem` bundled -> Just <$> vendoredDir vs ml d
-        _ -> pure Nothing
-      info ("Installing " ++ depName d ++ maybe "" (" from " ++) (maybe (depPath d) Just v) ++ maybe "" lockedAt ml)
-      case v of
-        Just dir -> mcabalInstall False d >>= \mcabal -> runLocked d ("cd " ++ quote dir ++ " && " ++ mcabal)
-        Nothing -> installDep ml d
-      unless (isLocal d) $ appendFile stamp (key d ml ++ "\n")
+    else forM_ todo $ \(u, k) -> do
+      let d = uDep u
+          ver = case (uLocked u, uTool u) of
+                  (Just l, _) -> lockedAt l
+                  (_, Just b) -> " " ++ bVersion b
+                  _ -> maybe "" (" " ++) (depVersion d)
+          what = depName d ++ ver
+      fromCache <- case k of
+        Stored sid _ -> do
+          maybe (pure ()) (\v -> removeOtherVersions db (nameOf u) v) (unitVersion u)
+          got <- fromStore db sid
+          when got $ info ("Installing " ++ what ++ " (built already, from the store)")
+          pure got
+        _ -> pure False
+      unless fromCache $ do
+        info $ case uTool u of
+          Just _ -> "Building " ++ what ++ " again from its source, against " ++ intercalate ", " replacedNames ++ " of miso.yml"
+          Nothing -> "Installing " ++ depName d ++ maybe "" (" from " ++) (uWhere u) ++ ver
+        maybe (pure ()) (\v -> removeOtherVersions db (nameOf u) v) (unitVersion u)
+        before <- pkgSums db
+        installUnit u
+        after <- pkgSums db
+        case k of
+          Stored sid keyLines ->
+            case [ f | (f, c) <- after, lookup f before /= Just c, (nameOf u ++ "-") `isPrefixOf` f ] of
+              f : _ -> toStore db sid f keyLines
+              [] -> pure ()
+          _ -> pure ()
+      appendFile (stampFile db) (keyStamp k ++ "\n")
+  -- what is installed now: the packages of this plan
+  writeFile (stampFile db) (unlines (map (keyStamp . snd) ids))
   where
     lockedAt (LockedHackage _ v _) = " " ++ v
     lockedAt (LockedGit _ _ _ c v) = " at " ++ take 7 c ++ maybe "" (\x -> " (" ++ x ++ ")") v
+
+-- | What a package is built from: in the store (its ID, and what the ID is
+-- of), or not (it is local, or built against a local one, or mcabal installs
+-- it by name).
+data Key = Stored String [String] | NotStored String
+
+keyStamp :: Key -> String
+keyStamp (Stored sid _) = sid
+keyStamp (NotStored s) = s
+
+-- | The version a package will be installed at, if known before.
+unitVersion :: Unit -> Maybe String
+unitVersion u = case (uLocked u, uTool u) of
+  (Just (LockedHackage _ v _), _) -> Just v
+  (Just (LockedGit _ _ _ _ v), _) -> v
+  (_, Just b) -> Just (bVersion b)
+  _ -> depVersion (uDep u)
+
+-- | The key of a package: its source, flags and compiler, and the keys of
+-- the packages it needs (those of the plan, the tool's, or MicroHs's).
+unitKey :: [(String, Key)] -> [(String, String)] -> Unit -> [String] -> IO Key
+unitKey planned toolIds u ds = do
+  let d = uDep u
+      depKey n = case lookup n planned of
+        Just k -> Right (keyStamp k)
+        Nothing -> case lookup n toolIds of
+          Just t -> Right t
+          Nothing -> Right ("mhs:" ++ n)
+      local = [ n | n <- ds, Just (NotStored _) <- [lookup n planned] ]
+      common = [ "flags: " ++ maybe "" id (depFlags d), "mhs: " ++ mhsVersion ]
+               ++ [ "needs: " ++ n ++ " " ++ k | n <- sort ds, Right k <- [depKey n] ]
+  case (uLocked u, uTool u, uDir u) of
+    _ | isLocal d -> do
+          let dir = maybe "" id (depPath d)
+          h <- sha256Tree dir
+          pure (NotStored ("path " ++ dir ++ " " ++ h))
+    -- built against a local package: again when that changes
+    _ | not (null local) ->
+          pure (NotStored (unwords (depName d : "against" : [ keyStamp k | n <- local, Just k <- [lookup n planned] ])))
+    (Just (LockedHackage n v h), _, _) -> stored n v (["hackage: " ++ n ++ " " ++ v ++ " " ++ h] ++ common)
+    (Just (LockedGit n repo _ c v), _, _) -> stored n (maybe (take 7 c) id v) (["git: " ++ n ++ " " ++ repo ++ " " ++ c] ++ common)
+    (_, Just b, _) -> do
+      h <- maybe (pure "") sha256File (bSource b)
+      stored (bName b) (bVersion b) (["tool-source: " ++ bName b ++ " " ++ bVersion b ++ " " ++ h] ++ common)
+    (_, _, Just dir) | Just v <- depVersion d -> do
+      h <- sha256Tree dir
+      stored (depName d) v (["hackage-source: " ++ depName d ++ " " ++ v ++ " " ++ h] ++ common)
+    _ -> pure (NotStored (show d))
+  where
+    stored n v keyLines = (\sid -> Stored sid keyLines) <$> storeId n v keyLines
+
+-- | Where the source of a package is, fetched if needed: Nothing when mcabal
+-- installs it by name (mcabal -r).
+sourceOf :: Maybe [(String, (String, String))] -> Dep -> Maybe Locked -> IO (Maybe FilePath, Maybe String)
+sourceOf vend d ml =
+  case (vend, ml) of
+    (Just vs, _) | not (isLocal d) -> do
+      dir <- vendoredDir vs ml d
+      pure (Just dir, Just dir)
+    (_, Just (LockedHackage n v h)) -> do
+      home <- misoHome
+      tarball <- checkedTarball n v h
+      let dir = home ++ "/src/hackage/" ++ n ++ "-" ++ v
+      unpacked <- doesDirectoryExist dir
+      unless unpacked $ run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
+      pure (Just dir, Nothing)
+    (_, Just (LockedGit n repo _ c _)) -> do
+      dir <- gitCheckout n repo c
+      pure (Just dir, Nothing)
+    (_, Nothing) -> case (depGit d, depPath d, depVersion d) of
+      (_, Just dir, _) -> do
+        ok <- doesDirectoryExist dir
+        unless ok $ failWith ("dependency " ++ depName d ++ ": no directory " ++ dir)
+        pure (Just dir, Just dir)
+      (Just repo, _, _) -> do
+        dir <- gitDir d
+        cloned <- doesDirectoryExist dir
+        unless cloned $ do
+          step ("cloning " ++ repo)
+          run ("git clone --quiet " ++ quote repo ++ " " ++ quote dir)
+          maybe (pure ()) (\r -> run ("git -C " ++ quote dir ++ " checkout --quiet " ++ quote r)) (depRev d)
+        pure (Just dir, Nothing)
+      (_, _, Just v) -> do
+        -- a version of miso.yml that the lock does not have yet
+        home <- misoHome
+        tarball <- hackageTarball (depName d) v
+        let dir = home ++ "/src/hackage/" ++ depName d ++ "-" ++ v
+        unpacked <- doesDirectoryExist dir
+        unless unpacked $ run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
+        pure (Just dir, Nothing)
+      _ -> pure (Nothing, Nothing)
+
+-- | Install a package in the project's package database ($CABALDIR): a
+-- locked one or a library of the tool without what it needs (installed
+-- before it); otherwise, with what it needs that is not installed (mcabal
+-- -r, by name from the package list).
+installUnit :: Unit -> IO ()
+installUnit u = do
+  let d = uDep u
+  case (uLocked u, uTool u, uDir u) of
+    (Just _, _, Just dir) -> mcabalInstall False d >>= \mcabal -> runLocked d ("cd " ++ quote dir ++ " && " ++ mcabal)
+    (_, Just _, Just dir) -> mcabalInstall False d >>= \mcabal -> run ("cd " ++ quote dir ++ " && " ++ mcabal)
+    (_, _, Just dir) -> mcabalInstall True d >>= \mcabal -> run ("cd " ++ quote dir ++ " && " ++ mcabal)
+    _ -> mcabalInstall True d >>= \mcabal -> run (mcabal ++ " " ++ quote (depName d))
 
 gitDir :: Dep -> IO FilePath
 gitDir d = do
   home <- misoHome
   pure (home ++ "/src/" ++ depName d ++ "-" ++ maybe "HEAD" (map (\c -> if c == '/' then '-' else c)) (depRev d))
-
-installDep :: Maybe Locked -> Dep -> IO ()
-installDep (Just (LockedHackage n v h)) d = do
-  -- the version of the lock, from Hackage, checked against its sha256
-  home <- misoHome
-  tarball <- checkedTarball n v h
-  let dir = home ++ "/src/hackage/" ++ n ++ "-" ++ v
-  unpacked <- doesDirectoryExist dir
-  unless unpacked $ run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
-  mcabal <- mcabalInstall False d
-  runLocked d ("cd " ++ quote dir ++ " && " ++ mcabal)
-installDep (Just (LockedGit n repo _ c _)) d = do
-  -- the commit of the lock
-  dir <- gitCheckout n repo c
-  mcabal <- mcabalInstall False d
-  runLocked d ("cd " ++ quote dir ++ " && " ++ mcabal)
-installDep Nothing d = do
-  mcabal <- mcabalInstall True d
-  case (depGit d, depPath d) of
-    (_, Just dir) -> do
-      ok <- doesDirectoryExist dir
-      unless ok $ failWith ("dependency " ++ depName d ++ ": no directory " ++ dir)
-      run ("cd " ++ quote dir ++ " && " ++ mcabal)
-    (Nothing, Nothing) -> run (mcabal ++ " " ++ quote (depName d))
-    (Just repo, Nothing) -> do
-      dir <- gitDir d
-      cloned <- doesDirectoryExist dir
-      unless cloned $ do
-        step ("cloning " ++ repo)
-        run ("git clone --quiet " ++ quote repo ++ " " ++ quote dir)
-        maybe (pure ()) (\r -> run ("git -C " ++ quote dir ++ " checkout --quiet " ++ quote r)) (depRev d)
-      run ("cd " ++ quote dir ++ " && " ++ mcabal)
 
 -- | mcabal install of a locked package, which installs nothing the package
 -- needs: a miso.lock from before miso locked those lacks them.
@@ -197,7 +423,7 @@ removeDeps names = do
   when (s' /= s) $ do
     writeFile configFile s'
     forM_ [ n | n <- names, n `elem` map depName (cfgDeps cfg) ] $ \n -> success ("Removed " ++ n)
-    step "(the packages stay installed, other projects may use them)"
+    step "(the packages stay in .miso/ until miso clean)"
 
 indentOf :: String -> Int
 indentOf = length . takeWhile (== ' ')
@@ -276,39 +502,42 @@ removeFromYml s n =
 -----------------------------------------------------------------------------
 -- miso list
 
--- | The packages: those that come with the tool, and those miso installed.
+-- | The packages: those that come with the tool (its compiler's, and its
+-- libraries), and those the project installed in its .miso/ (which it uses
+-- instead of the tool's of the same name).
 listPackages :: IO ()
 listPackages = do
   db <- toolDb
-  let dir = db ++ "/packages"
-  ok <- doesDirectoryExist dir
+  ok <- doesDirectoryExist (db ++ "/packages")
   unless ok $ failWith ("no package database at " ++ db)
-  pkgs <- sort . filter (".pkg" `isSuffixOf'`) <$> listDirectory dir
-  bundledFile <- pure (db ++ "/miso-bundled")
-  hasBundled <- doesFileExist bundledFile
-  bundled <- if hasBundled then lines <$> readFile' bundledFile else pure pkgs
-  -- what miso install installs goes in $MISO_HOME/mcabal/mhs-VERSION, where
-  -- mcabal installs (and mhs finds it)
-  pd <- pkgDir
-  hasUser <- doesDirectoryExist (pd ++ "/packages")
-  installed <- if hasUser then sort . filter (".pkg" `isSuffixOf'`) <$> listDirectory (pd ++ "/packages") else pure []
-  let mine = filter (`elem` bundled) pkgs
-      user = filter (`notElem` bundled) pkgs ++ installed
-      nameVersion p =
+  tool <- bundledPackages
+  mpd <- pkgDir
+  installed <- case mpd of
+    Just pd -> do
+      has <- doesDirectoryExist (pd ++ "/packages")
+      if has then sort . filter (".pkg" `isSuffixOf'`) <$> listDirectory (pd ++ "/packages") else pure []
+    Nothing -> pure []
+  let nameVersion p =
         let (rv, rn) = break (== '-') (reverse (take (length p - 4) p))
         in  (reverse (drop 1 rn), reverse rv)
-      -- (a package installed that also comes with miso: mhs takes one of them)
-      showPkg isUser p = do
-        let (n, v) = nameVersion p
-            also = [ () | isUser, b <- mine, fst (nameVersion b) == n ]
+      mine = map (fst . nameVersion) installed
+      showPkg n v note = do
         n' <- colored 1 [Bold] n
         v' <- colored 1 [Dim] v
-        note <- if null also then pure "" else (" " ++) <$> colored 1 [Dim] "(also comes with miso)"
-        putStrLn ("  " ++ n' ++ replicate (24 - length n) ' ' ++ v' ++ note)
+        note' <- if null note then pure "" else (" " ++) <$> colored 1 [Dim] note
+        putStrLn ("  " ++ n' ++ replicate (24 - length n) ' ' ++ v' ++ note')
   info "Packages that come with miso"
-  mapM_ (showPkg False) mine
-  info ("Packages installed by miso install (" ++ pd ++ ")")
-  if null user then colored 1 [Dim] "  (none)" >>= putStrLn else mapM_ (showPkg True) user
+  forM_ (sortBy (comparing bName) tool) $ \b ->
+    showPkg (bName b) (bVersion b)
+      (if bName b `elem` mine then "(replaced in this project)"
+       else if bSource b == Nothing then "(part of the compiler)" else "")
+  case mpd of
+    Nothing -> step "(not in a project: miso list in a project shows its packages too)"
+    Just pd -> do
+      info ("Packages of this project (" ++ pd ++ ")")
+      if null installed then colored 1 [Dim] "  (none)" >>= putStrLn
+        else forM_ installed $ \p -> let (n, v) = nameVersion p in
+               showPkg n v (if n `elem` map bName tool then "(instead of the one that comes with miso)" else "")
 
 -----------------------------------------------------------------------------
 -- miso update
@@ -323,12 +552,21 @@ lockDeps cfg = do
   old <- maybe [] id <$> readLock
   info ("Locking the dependencies in " ++ lockFile)
   new <- resolveTree True old cfg
-  writeLock new
+  toolLibs <- usedToolLibraries cfg
+  writeLock toolLibs new
   case describeChanges old new of
     [] -> success (lockFile ++ " is up to date")
     changes -> do
       mapM_ step changes
       success ("Wrote " ++ lockFile ++ " (miso install installs it)")
+
+-- | The libraries of the tool the project uses (those it does not
+-- replace), as name-version, for miso.lock.
+usedToolLibraries :: Config -> IO [String]
+usedToolLibraries cfg = do
+  tool <- bundledPackages
+  replaced <- filterM (isReplacement tool) (allDeps cfg)
+  pure [ bName b ++ "-" ++ bVersion b | b <- tool, bSource b /= Nothing, bName b `notElem` map depName replaced ]
 
 -- | miso update: a new package list for mcabal (the newest Stackage
 -- snapshot), and every package locked again at its version, git
@@ -337,11 +575,12 @@ updateDeps :: Config -> IO ()
 updateDeps cfg = do
   setupEnv
   info "Updating the package list"
-  runSelf "mcabal update"
+  withGlobalCabal (runSelf "mcabal update")
   old <- maybe [] id <$> readLock
   info ("Locking the dependencies in " ++ lockFile)
   new <- resolveTree False old cfg
-  writeLock new
+  toolLibs <- usedToolLibraries cfg
+  writeLock toolLibs new
   case describeChanges old new of
     [] -> success (lockFile ++ " is up to date")
     changes -> do

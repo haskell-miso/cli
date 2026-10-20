@@ -23,6 +23,8 @@
         static = pkgs.stdenv.hostPlatform.isLinux;
         cc = if static then pkgs.pkgsStatic.stdenv.cc else pkgs.stdenv.cc;
         mhsVersion = pkgs.microhs.version;
+        # the sources miso's overlay builds its packages from
+        misoSrc = import "${miso}/nix/source.nix" pkgs;
 
         miso-cli = pkgs.stdenv.mkDerivation {
           pname = "miso";
@@ -48,6 +50,16 @@
             chmod -R u+w $out/mhs-${mhsVersion}
             # what comes with the tool (miso list tells these from what users install)
             (cd $out/mhs-${mhsVersion}/packages && ls *.pkg) > $out/mhs-${mhsVersion}/miso-bundled
+            # the sources of its libraries, as miso-mhs built them, for
+            # projects that replace one of them (scripts/ship-source.sh)
+            db=$out/mhs-${mhsVersion}
+            sh scripts/ship-source.sh $db transformers ${misoSrc.mhs-transformers}
+            # mtl 2.3.1, patched as miso's nix/mhs/default.nix does
+            cp -r ${misoSrc.mhs-mtl} mtl && chmod -R u+w mtl
+            sed -i 's/^instance forall k (r :: k) (m :: (k -> Type)) \. MonadCont (ContT r m) where/instance MonadCont (ContT r m) where/' mtl/Control/Monad/Cont/Class.hs
+            sh scripts/ship-source.sh $db mtl mtl
+            sh scripts/ship-source.sh $db containers ${misoSrc.mhs-containers}/containers
+            sh scripts/ship-source.sh $db miso ${misoSrc.miso} "-template-haskell -aeson -native -production -ssr -benchmark -text"
             runHook postInstall
           '';
         };
