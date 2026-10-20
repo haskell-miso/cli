@@ -9,10 +9,13 @@ and its dependencies already installed.
 curl -fsSL https://haskell-miso.org/download | sh
 ```
 
-It downloads the release for your OS and architecture, checks its sha256,
-unpacks it in `~/.miso` (or `$MISO_HOME`), and asks to add `~/.miso/bin` to
-`PATH` in your shell's startup file (`.zshrc`, `.bashrc` or `.bash_profile`,
-fish's `config.fish`, or `.profile`).  `sh -s -- --yes` does not ask, and
+It downloads the release for your OS and architecture and checks its
+sha256.  Then it shows what it will create, replace and remove in `~/.miso`
+(or `$MISO_HOME`) and asks before installing; it lists what it installed,
+asks to add `~/.miso/bin` to `PATH` in your shell's startup file
+(`.zshrc`, `.bashrc` or `.bash_profile`, fish's `config.fish`, or
+`.profile`), and checks the installation with `miso doctor` (which says
+when emcc, for the browser, is missing).  `sh -s -- --yes` does not ask, and
 `--no-modify-path` leaves the startup files alone; `MISO_VERSION=v0.1.0`
 installs that release.  On NixOS it says to install miso with nix
 instead, and installs nothing (`--yes` installs in `~/.miso` anyway):
