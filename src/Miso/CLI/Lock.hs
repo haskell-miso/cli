@@ -6,6 +6,7 @@
 -- > # Local (path:) dependencies are not locked.
 -- > miso: 0.1.0
 -- > mhs: 0.16.10.0
+-- > bundled: containers-0.8 miso-1.14.0.0 mtl-2.3.1 transformers-0.6.1.2
 -- > packages:
 -- >   - name: split               # from Hackage: the version, and the
 -- >     hackage: 0.2.5.1          # sha256 of its tarball
@@ -15,6 +16,10 @@
 -- >     rev: v2.1.3               # commit it was, and the version of the
 -- >     commit: 3d0e...           # package there
 -- >     version: 2.1.3
+--
+-- bundled: the versions of the packages that came with the tool and that the
+-- project uses from it (not the ones it installs itself).  A newer tool may
+-- come with others: miso install says so, and miso lock records them.
 --
 -- miso lock writes it (keeping what is locked already), miso update writes it
 -- with the versions of mcabal's new package list; miso install and miso
@@ -26,6 +31,7 @@ module Miso.CLI.Lock
   ( Locked (..)
   , lockFile
   , readLock
+  , readLockBundled
   , writeLock
   , lockedFor
   , lockedName
@@ -82,7 +88,7 @@ lockedFor pn lock d
         l : _ -> Just l
         [] -> Nothing
   where
-    matches (LockedHackage _ _ _) = isHackage d
+    matches (LockedHackage _ v _) = isHackage d && maybe True (== v) (depVersion d)
     matches (LockedGit _ repo rev _ _) = depGit d == Just repo && depRev d == rev
 
 -----------------------------------------------------------------------------
@@ -130,14 +136,27 @@ entry (Map kvs) = do
     str v = Left ("expected a string, found " ++ show v)
 entry v = Left ("bad package " ++ show v)
 
-writeLock :: [Locked] -> IO ()
-writeLock ls =
+-- | The packages of the tool that miso.lock was written with (name-version),
+-- or Nothing if it does not say.
+readLockBundled :: IO (Maybe [String])
+readLockBundled = do
+  ok <- doesFileExist lockFile
+  if not ok then pure Nothing else do
+    s <- readFile' lockFile
+    pure $ case parseYAML s of
+      Right (Map kvs) | Just (Str b) <- lookup "bundled" kvs -> Just (words b)
+      _ -> Nothing
+
+-- | Write the lock, with the tool's packages the project uses (name-version).
+writeLock :: [String] -> [Locked] -> IO ()
+writeLock bundled ls =
   writeFile lockFile $ unlines $
     [ "# miso.lock: written by miso lock and miso update.  Commit it; do not edit it."
     , "# Local (path:) dependencies are not locked."
     , "miso: " ++ version
     , "mhs: " ++ mhsVersion
-    ] ++ (if null ls then ["packages: []"] else "packages:" : concatMap item ls)
+    ] ++ [ "bundled: " ++ unwords bundled | not (null bundled) ]
+    ++ (if null ls then ["packages: []"] else "packages:" : concatMap item ls)
   where
     item (LockedHackage n v h) =
       [ "  - name: " ++ n

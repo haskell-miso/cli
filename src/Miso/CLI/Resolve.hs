@@ -8,16 +8,21 @@
 -- with MicroHs's names: random is random-mhs), at the versions of the
 -- package list (or, for a package that is not in it, Hackage's newest), and
 -- installs them in order, each after what it needs.  The packages that come
--- with the tool, and those built into MicroHs, are not locked.
+-- with the tool, and those built into MicroHs, are not locked, unless
+-- miso.yml replaces one (git:, path:, or another version:).
 module Miso.CLI.Resolve
   ( resolveTree
   , mcabalNames
   , builtInNames
   , bundledNames
+  , packageDeps
+  , mcabalEnv
+  , isReplacement
   ) where
 
 import Control.Exception (SomeException, evaluate, try)
-import Control.Monad (filterM, forM_, unless)
+import Control.Monad (filterM, forM_, unless, when)
+import Data.Maybe (listToMaybe)
 import Data.IORef (modifyIORef, newIORef, readIORef)
 import Data.List (intercalate, isPrefixOf, nub)
 import Data.Version (showVersion)
@@ -30,9 +35,12 @@ import qualified MicroCabal.Main as MC
 import qualified MicroCabal.Parse as MC
 import qualified MicroCabal.StackageList as MC
 
+import MicroHs.Compile (mhsVersion)
+
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Lock
+import Miso.CLI.Store
 import Miso.CLI.Util
 
 -- | mcabal's environment, with the MicroHs backend (miso mhs).
@@ -63,23 +71,24 @@ builtInNames ns = do
 
 -- | The names of the packages that come with the tool.
 bundledNames :: IO [String]
-bundledNames = do
-  db <- toolDb
-  let listed = db ++ "/miso-bundled"
-      dir = db ++ "/packages"
-  hasList <- doesFileExist listed
-  hasDir <- doesDirectoryExist dir
-  pkgs <- if hasList then lines <$> readFile' listed
-          else if hasDir then filter (".pkg" `isSuffixOf'`) <$> listDirectory dir
-          else pure []
-  pure [ nameOf p | p <- pkgs, ".pkg" `isSuffixOf'` p ]
-  where
-    -- name-1.2.3.pkg
-    nameOf p = reverse (drop 1 (dropWhile (/= '-') (reverse (take (length p - 4) p))))
+bundledNames = map bName <$> bundledPackages
+
+-- | Does a dependency of miso.yml replace a package of the tool: one that
+-- comes with it, from git or a local directory, or at another version?  It
+-- fails for a package that is part of the compiler (it has no source).
+isReplacement :: [Bundled] -> Dep -> IO Bool
+isReplacement bundled d =
+  case [ b | b <- bundled, bName b == depName d ] of
+    b : _ | isLocal d || isGit d || maybe False (/= bVersion b) (depVersion d) -> do
+      when (bSource b == Nothing) $
+        failWith (depName d ++ " comes with miso as part of its compiler (MicroHs " ++ mhsVersion ++ "), so it cannot be "
+                  ++ "replaced: remove the git:, path: or version: of " ++ depName d ++ " in miso.yml")
+      pure True
+    _ -> pure False
 
 -- | Does a package need installing: not one of the tool's, nor one built
--- into MicroHs (base, text, bytestring, ...)?  A package installed in
--- $MISO_HOME (by another project) still needs it, on another machine.
+-- into MicroHs (base, text, bytestring, ...)?  A package the project
+-- installed already still needs it, on another machine.
 needsInstall :: MC.Env -> [String] -> String -> IO Bool
 needsInstall env bundled n
   | n `elem` bundled = pure False
@@ -88,8 +97,9 @@ needsInstall env bundled n
       if not available then pure True else installedHere
   where
     installedHere = do
-      d <- (++ "/packages") <$> pkgDir
-      ok <- doesDirectoryExist d
+      md <- pkgDir
+      let d = maybe "" (++ "/packages") md
+      ok <- if null d then pure False else doesDirectoryExist d
       ps <- if ok then listDirectory d else pure []
       pure (any isOurs ps)
     -- n-1.2.3.pkg (and not n-foo-1.2.3.pkg)
@@ -131,9 +141,16 @@ packageDeps env fl why dir = do
 resolveTree :: Bool -> [Locked] -> Config -> IO [Locked]
 resolveTree keep old cfg = do
   env <- mcabalEnv
-  -- mcabal's package list (it runs mcabal update if there is none)
-  snapshot <- map (\p -> (MC.stName p, showVersion (MC.stVersion p))) <$> MC.getPackageList env
-  bundled <- bundledNames
+  -- mcabal's package list, which every project shares (it runs mcabal
+  -- update if there is none)
+  snapshot <- withGlobalCabal $ do
+    -- (not mcabalEnv, whose setupEnv is the project's $CABALDIR)
+    genv <- (\e -> e { MC.verbose = -1 }) <$> MC.setupEnv
+    map (\p -> (MC.stName p, showVersion (MC.stVersion p))) <$> MC.getPackageList genv
+  tool <- bundledPackages
+  replaced <- filterM (isReplacement tool) (allDeps cfg)
+  -- a package of the tool that miso.yml replaces is locked as any other
+  let bundled = [ bName b | b <- tool, bName b `notElem` map depName replaced ]
   home <- misoHome
   state <- newIORef ([], [])            -- the packages seen, and the lock (reversed)
   let pn = patchedName env
@@ -159,9 +176,10 @@ resolveTree keep old cfg = do
               packageDeps env (flagsOf d) (why chain) dir >>= mapM_ (visit (n : chain))
               emit l
             mroot -> do
-              need <- needsInstall env bundled n
+              -- (a package of the tool is available, but miso.yml replaces it)
+              need <- if n `elem` map (pn . depName) replaced then pure True else needsInstall env bundled n
               if not need then pure () else do
-                l <- lockHackage snapshot chain n
+                l <- lockHackage snapshot chain n (depVersion =<< listToMaybe mroot)
                 let LockedHackage _ v h = l
                     dir = home ++ "/src/hackage/" ++ n ++ "-" ++ v
                 unpacked <- doesDirectoryExist dir
@@ -172,15 +190,17 @@ resolveTree keep old cfg = do
                   run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
                 packageDeps env (concatMap flagsOf (take 1 mroot)) (why chain) dir >>= mapM_ (visit (n : chain))
                 emit l
-      -- a Hackage package: kept from miso.lock, or at the package list's version
-      lockHackage snapshot chain n = do
-        let prev = [ l | l@(LockedHackage m _ _) <- old, m == n ]
+      -- a Hackage package: kept from miso.lock, or at the package list's
+      -- version, or at the version of miso.yml
+      lockHackage snapshot chain n forced = do
+        let prev = [ l | l@(LockedHackage m v _) <- old, m == n, maybe True (== v) forced ]
         case prev of
-          l : _ | keep -> pure l
+          l : _ | keep || forced /= Nothing -> pure l
           _ -> do
-            v <- case lookup n snapshot of
-                   Just v -> pure v
-                   Nothing -> do
+            v <- case (forced, lookup n snapshot) of
+                   (Just v, _) -> pure v
+                   (_, Just v) -> pure v
+                   _ -> do
                      step (n ++ " is not in mcabal's package list: Hackage's newest" ++ why chain)
                      newestVersion n
             case [ l | l@(LockedHackage _ v' _) <- prev, v' == v ] of

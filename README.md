@@ -49,10 +49,10 @@ miso build            # public/index.js (target: browser)
 | `miso watch [NAME]` | type check the library, the programs and the tests (or NAME) on every change, and show the first error, as ghcid does |
 | `miso lint [ARGS]` | run [hlint](https://github.com/ndmitchell/hlint) on the source dirs of `miso.yml`, with ARGS; it reads `.hlint.yaml` |
 | `miso repl` | mhs, interactively, with the project's sources and packages |
-| `miso clean` | remove `dist/`, `public/`, and the caches |
-| `miso install` | install the dependencies of `miso.yml` |
+| `miso clean` | remove `dist/`, `public/`, `.miso/`, and the caches |
+| `miso install` | install the dependencies of `miso.yml`, in the project's `.miso/` |
 | `miso add PKG...` / `miso remove PKG...` | edit the dependencies of `miso.yml` (keeping its comments), and install |
-| `miso list` | the installed packages: those that come with miso, and those miso install installed (in `$MISO_HOME/mcabal`) |
+| `miso list` | the packages: those that come with miso, and in a project the ones it installed in `.miso/` |
 | `miso lock` | write `miso.lock`: the dependencies of `miso.yml` and the packages they need; lock what is not locked yet, keep what is |
 | `miso update` | a new package list for mcabal, and `miso.lock` again at its versions (git dependencies at their current commits); then install |
 | `miso vendor` | lock as `miso lock` does, and copy the source of each locked dependency to `vendor/NAME`; builds then install from there, and fail rather than download |
@@ -96,7 +96,9 @@ dependencies:
     rev: v2.1.3
     flags: -foo +bar
   - name: my-lib           # a local checkout, relative to miso.yml
-    path: ../my-lib        # (installed again on every build)
+    path: ../my-lib        # (installed again when its files change)
+  - name: aeson            # a version from Hackage, not the package list's
+    version: 2.2.3.0
 ```
 
 `main`, `source-dirs` and `target` there describe the project's one program.
@@ -174,11 +176,50 @@ takes many) on the library and each program, clears the screen, and shows
 `All good` or the first error as `file:line:col: message`.  mhs stops at the
 first error, so after fixing one, the next shows on the next save.
 
-base, containers, mtl, transformers, array, and miso come with the tool.
-Other packages are installed next to them, in `~/.miso/mhs-VERSION`
-(`install.sh` unpacks the tool in `$MISO_HOME`, default `~/.miso`); a new
-release starts with a fresh package database, and `miso build` installs them
-again.
+## Packages
+
+Some packages come with the tool, in its package database
+(`~/.miso/mhs-VERSION`): the compiler's (`base`, `ghc-compat`, `array-mhs`,
+`template-haskell`), and the libraries `containers`, `mtl`, `transformers`
+and `miso`.  The packages a project installs go in the project, in
+`.miso/` (next to `miso.yml`; `miso new` puts it in `.gitignore`, and
+`miso clean` removes it).  mhs looks for packages in the project's
+`.miso/` first, then in the tool's database, and nowhere else: what one
+project installs is not seen by another, so two projects can use two
+versions of a package.
+
+Building a package takes time, so each one is kept in a store,
+`~/.miso/store/mhs-VERSION/`, and a project that needs the same one again
+copies it from there (`Installing split 0.2.5.1 (built already, from the
+store)`).  A package is the same one when it has the same source (the sha256
+of a Hackage tarball, or a git commit), cabal flags and compiler, and was
+built against the same packages; one built against a local (`path:`)
+package is not kept (it is built again when that changes).  The downloads
+and git checkouts are kept in `~/.miso/src`, and mcabal's package list in
+`~/.miso/mcabal`, for every project.  A project with no `miso.lock` gets its
+dependencies locked for the install, as `miso lock` would (without writing
+`miso.lock`), so they are kept in the store too.
+
+A project can replace a library that comes with the tool: a dependency on
+it with `git:`, `path:`, or a `version:` that is not the tool's.  It is
+installed in the project's `.miso/`, and the tool's libraries that need it
+are built again in the project, from their source (the release ships the
+source of its libraries, in `~/.miso/mhs-VERSION/miso-sources`), against
+it; `miso list` shows which:
+
+```yaml
+dependencies:
+  - name: transformers     # instead of the tool's 0.6.1.2: mtl and miso,
+    version: 0.6.1.1       # which need it, are built again against it
+  - name: miso             # miso from a checkout (with the flags the tool's
+    path: ../miso          # is built with, in miso-sources/miso-*.flags)
+    flags: -template-haskell -aeson -native -production -ssr -benchmark -text
+```
+
+The compiler's packages cannot be replaced (`miso build` says so).
+`miso.lock` records the versions of the tool's libraries a project uses; a
+newer tool may come with others, and `miso build` then warns (`miso lock`
+records them; to keep one, give its `version:` in `miso.yml`).
 
 ## miso.lock
 
@@ -194,6 +235,7 @@ version of the package there (from its `miso.yml`, or its `.cabal` file):
 # Local (path:) dependencies are not locked.
 miso: 0.1.0
 mhs: 0.16.10.0
+bundled: containers-0.8 miso-1.14.0.0 mtl-2.3.1 transformers-0.6.1.2
 packages:
   - name: split
     hackage: 0.2.5.1
@@ -233,17 +275,15 @@ packages:
 - `miso.lock` is resolved on one OS: a package that only another OS needs
   (`if os(windows)`, say) is not in it.
 
-`miso build` and `miso install` then install exactly that, in its order:
-the Hackage tarball of each version (checked against its sha256), and the
-git commit, until the next `miso lock` or `miso update`; mcabal installs
-nothing a locked package needs by itself.  Local (`path:`) dependencies are
-not locked (they are installed from the directory on every build, after the
-locked packages, which include what they need), and neither are the packages
-that come with the tool.  A dependency that is not in `miso.lock` (added to
-`miso.yml` since, or with a different `git`/`rev`) is installed as without a
-lock, with a warning.  Without a `miso.lock`, mcabal installs each
-dependency with what it needs (`mcabal -r`), at the versions of its package
-list.
+`miso build` and `miso install` then install exactly that, each package
+after the ones it needs: the Hackage tarball of each version (checked against
+its sha256), and the git commit, until the next `miso lock` or `miso update`;
+mcabal installs nothing a locked package needs by itself.  Local (`path:`)
+dependencies are not locked (they are installed from the directory when its
+files change), and neither are the packages that come with the tool, unless
+the project replaces one (see Packages).  A dependency that is not in
+`miso.lock` (added to `miso.yml` since, or with a different `git`/`rev`) is
+locked for the install, as without a `miso.lock`, with a warning.
 
 ## vendor/
 
@@ -262,7 +302,8 @@ Commit `vendor/` with `miso.lock`.  A project with `vendor/.miso-vendor` is
 vendored:
 
 - `miso build` and `miso install` install the locked dependencies from
-  `vendor/`, and never download them.  A dependency that is not locked, not
+  `vendor/` (or copy them from the store, when it has the same package
+  built), and never download them.  A dependency that is not locked, not
   in `vendor/`, at another version than `miso.lock`'s, or whose files have
   changed since `miso vendor` copied them, is an error: run `miso vendor`
   (after `miso update`, too).

@@ -5,7 +5,8 @@
 #   1. MicroHs, at the revision the miso flake pins, built and installed
 #      in a fresh package database
 #   2. the packages miso needs under mhs, and miso itself, installed in it
-#      (as miso's nix/mhs/default.nix does)
+#      (as miso's nix/mhs/default.nix does), and the sources of the
+#      libraries among them (scripts/ship-source.sh)
 #   3. the miso tool, built with that mhs
 #   4. miso-SYSTEM.tar.gz (bin/miso and the package database), and its sha256
 #
@@ -168,7 +169,15 @@ inst mhs-containers /containers
 say "installing miso"
 rm -rf "$work/pkg"
 cp -R "$work/src/miso" "$work/pkg"
-(cd "$work/pkg" && $mcabal -q -f"-template-haskell -aeson -native -production -ssr -benchmark -text" install)
+misoflags="-template-haskell -aeson -native -production -ssr -benchmark -text"
+(cd "$work/pkg" && $mcabal -q -f"$misoflags" install)
+
+# The sources of the libraries (not the compiler's packages), as they were
+# built, for projects that replace one of them
+scripts/ship-source.sh "$db" transformers "$work/src/mhs-transformers"
+scripts/ship-source.sh "$db" mtl "$work/src/mhs-mtl"
+scripts/ship-source.sh "$db" containers "$work/src/mhs-containers/containers"
+scripts/ship-source.sh "$db" miso "$work/src/miso" "$misoflags"
 
 # 3. The miso tool
 say "building miso"
