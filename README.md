@@ -180,8 +180,20 @@ first error, so after fixing one, the next shows on the next save.
 
 Some packages come with the tool, in its package database
 (`~/.miso/mhs-VERSION`): the compiler's (`base`, `ghc-compat`, `array-mhs`,
-`template-haskell`), and the libraries `containers`, `mtl`, `transformers`
-and `miso`.  The packages a project installs go in the project, in
+`template-haskell`), and the libraries `containers`, `mtl` and
+`transformers`.
+
+miso is not one of them: a project depends on it (`miso new` writes
+`dependencies: [miso]`), and locks it like any other package.  `- miso`, with
+no source of its own, is the miso of the tool's release: the commit of
+dmjio/miso it was built from (`~/.miso/mhs-VERSION/miso-default`), locked as
+a git dependency at that commit, and installed as it came with the release
+(`~/.miso/mhs-VERSION/miso-prebuilt`), not built.  A new release of the tool
+does not change the miso of a project that has it in `miso.lock`; `miso
+update` moves it to the new release's.  Another miso is a dependency with
+its own source (`git:`, `path:`, or a `version:` from Hackage).  A project
+whose code imports `Miso` but does not depend on it (from before) gets the
+release's, with a warning.  The packages a project installs go in the project, in
 `.miso/` (next to `miso.yml`; `miso new` puts it in `.gitignore`, and
 `miso clean` removes it).  mhs looks for packages in the project's
 `.miso/` first, then in the tool's database, and nowhere else: what one
@@ -209,10 +221,18 @@ it; `miso list` shows which:
 
 ```yaml
 dependencies:
-  - name: transformers     # instead of the tool's 0.6.1.2: mtl and miso,
-    version: 0.6.1.1       # which need it, are built again against it
-  - name: miso             # miso from a checkout (with the flags the tool's
-    path: ../miso          # is built with, in miso-sources/miso-*.flags)
+  - miso                   # built again against transformers 0.6.1.1
+  - name: transformers     # instead of the tool's 0.6.1.2: mtl, which needs
+    version: 0.6.1.1       # it, is built again against it
+```
+
+miso from a checkout is a `path:` dependency, with the flags the release
+builds it with (in `~/.miso/mhs-VERSION/miso-default`):
+
+```yaml
+dependencies:
+  - name: miso
+    path: ../miso
     flags: -template-haskell -aeson -native -production -ssr -benchmark -text
 ```
 
@@ -235,7 +255,7 @@ version of the package there (from its `miso.yml`, or its `.cabal` file):
 # Local (path:) dependencies are not locked.
 miso: 0.1.0
 mhs: 0.16.10.0
-bundled: containers-0.8 miso-1.14.0.0 mtl-2.3.1 transformers-0.6.1.2
+bundled: containers-0.8 mtl-2.3.1 transformers-0.6.1.2
 packages:
   - name: split
     hackage: 0.2.5.1

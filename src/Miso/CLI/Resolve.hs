@@ -18,6 +18,7 @@ module Miso.CLI.Resolve
   , packageDeps
   , mcabalEnv
   , isReplacement
+  , withMiso
   ) where
 
 import Control.Exception (SomeException, evaluate, try)
@@ -106,6 +107,36 @@ needsInstall env bundled n
     isOurs p = (n ++ "-") `isPrefixOf` p && ".pkg" `isSuffixOf'` p
                && all (`elem` "0123456789.") (drop (length n + 1) (take (length p - 4) p))
 
+-- | The project's dependencies, with miso as a package like the others: a
+-- dependency on miso with no source of its own (- miso) is the release's
+-- (Miso.CLI.Store), and a project whose code imports Miso but does not
+-- depend on it (miso.yml from a release that had miso among its packages)
+-- depends on it too, with a warning.  With such a release, as it is.
+withMiso :: Config -> IO Config
+withMiso cfg = do
+  md <- misoDefault
+  case md of
+    Nothing -> pure cfg
+    Just m -> do
+      let has = any ((== "miso") . depName) (allDeps cfg)
+      imports <- if has then pure False else importsMiso cfg
+      when imports $
+        warn ("the code imports Miso, but miso.yml has no dependency on miso; using the miso of this release "
+              ++ mdVersion m ++ " (miso add miso adds it)")
+      let plain d = depName d == "miso" && isHackage d && depVersion d == Nothing
+          fix ds = [ if plain d then defaultMisoDep m (depFlags d) else d | d <- ds ]
+      pure cfg { cfgDeps = fix (cfgDeps cfg) ++ [ defaultMisoDep m Nothing | imports ]
+               , cfgLibrary = fmap (\l -> l { libDeps = fix (libDeps l) }) (cfgLibrary cfg)
+               , cfgExecutables = [ e { exeDeps = fix (exeDeps e) } | e <- cfgExecutables cfg ]
+               , cfgTests = [ t { exeDeps = fix (exeDeps t) } | t <- cfgTests cfg ] }
+
+-- | Does the project's code import a module of miso?
+importsMiso :: Config -> IO Bool
+importsMiso cfg = do
+  dirs <- filterM doesDirectoryExist (allSourceDirs cfg)
+  if null dirs then pure False
+    else tryRun ("grep -rqE --include='*.hs' '^import +(qualified +)?Miso' " ++ unwords (map quote dirs))
+
 -- | The packages a package needs: the build-depends of its libraries and
 -- executables that are buildable, for this OS, architecture and compiler
 -- and the cabal flags given, with MicroHs's names, as mcabal reads them;
@@ -152,9 +183,15 @@ resolveTree keep old cfg = do
   -- a package of the tool that miso.yml replaces is locked as any other
   let bundled = [ bName b | b <- tool, bName b `notElem` map depName replaced ]
   home <- misoHome
+  md <- misoDefault
   state <- newIORef ([], [])            -- the packages seen, and the lock (reversed)
   let pn = patchedName env
       roots = allDeps cfg
+      -- the dependencies of miso.yml by that name; miso, when a package
+      -- needs it, is the release's
+      rootsFor n = case [ d | d <- roots, pn (depName d) == n ] of
+        [] | n == "miso", Just m <- md -> [defaultMisoDep m Nothing]
+        ds -> ds
       flagsOf d = maybe [] MC.decodeCabalFlags (depFlags d)
       emit l = modifyIORef state (\(seen, out) -> (seen, l : out))
       -- why a package is needed: "(needed by fail, needed by transformers-compat, ...)"
@@ -165,14 +202,18 @@ resolveTree keep old cfg = do
         (seen, _) <- readIORef state
         unless (n `elem` seen) $ do
           modifyIORef state (\(s, out) -> (n : s, out))
-          case [ d | d <- roots, pn (depName d) == n ] of
+          case rootsFor n of
             d : _ | Just dir <- depPath d -> do
               ok <- doesDirectoryExist dir
               unless ok $ failWith ("dependency " ++ depName d ++ ": no directory " ++ dir)
               packageDeps env (flagsOf d) (why chain) dir >>= mapM_ (visit (n : chain))
             d : _ | isGit d -> do
-              l <- maybe (resolveGit d) pure (if keep then lockedFor pn old d else Nothing)
-              dir <- gitCheckout (lkName l) (lkRepo l) (lkCommit l)
+              let resolve = case md of
+                    -- the release's miso, at its commit
+                    Just m | isDefaultMiso m d -> pure (LockedGit "miso" (mdRepo m) Nothing (mdCommit m) (Just (mdVersion m)))
+                    _ -> resolveGit d
+              l <- maybe resolve pure (if keep then lockedFor pn old d else Nothing)
+              dir <- checkoutAt (lkName l) (lkRepo l) (lkCommit l)
               packageDeps env (flagsOf d) (why chain) dir >>= mapM_ (visit (n : chain))
               emit l
             mroot -> do

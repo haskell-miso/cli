@@ -48,8 +48,6 @@
             cp build/miso build/cpphs $out/bin/
             cp -r ${pkgs.miso-mhs}/lib/mcabal/mhs-${mhsVersion} $out/mhs-${mhsVersion}
             chmod -R u+w $out/mhs-${mhsVersion}
-            # what comes with the tool (miso list tells these from what users install)
-            (cd $out/mhs-${mhsVersion}/packages && ls *.pkg) > $out/mhs-${mhsVersion}/miso-bundled
             # the sources of its libraries, as miso-mhs built them, for
             # projects that replace one of them (scripts/ship-source.sh)
             db=$out/mhs-${mhsVersion}
@@ -60,6 +58,11 @@
             sh scripts/ship-source.sh $db mtl mtl
             sh scripts/ship-source.sh $db containers ${misoSrc.mhs-containers}/containers
             sh scripts/ship-source.sh $db miso ${misoSrc.miso} "-template-haskell -aeson -native -production -ssr -benchmark -text"
+            # miso is not on every project's package path: a project depends
+            # on it, at the commit of flake.lock, and installs this prebuilt one
+            sh scripts/prebuilt-miso.sh $db https://github.com/dmjio/miso ${miso.rev} "-template-haskell -aeson -native -production -ssr -benchmark -text"
+            # what comes with the tool (miso list tells these from what users install)
+            (cd $db/packages && ls *.pkg) > $db/miso-bundled
             runHook postInstall
           '';
         };

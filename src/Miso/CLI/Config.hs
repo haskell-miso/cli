@@ -46,7 +46,9 @@
 -- >     source-dirs: [test]    # default [test]
 -- >     dependencies: [split]
 --
--- miso itself, and base, containers, mtl, ... come installed with the tool.
+-- base, containers, mtl, ... come installed with the tool.  miso is a
+-- dependency like the others: - miso is the miso of the tool's release,
+-- locked at its commit (Miso.CLI.Store).
 -- A dependency on one of those with a source (git:, path:, or a version:
 -- that is not the tool's) is installed in the project instead, and the
 -- tool's packages that need it are built again against it (Miso.CLI.Deps).

@@ -31,8 +31,9 @@ misoYml name = unlines
   , "source-dirs: [app]"
   , "# browser: WebAssembly (needs emcc), browser_js: JavaScript, native: an executable"
   , "target: browser"
-  , "# miso, containers, mtl, ... come with the miso tool; add other packages here"
-  , "dependencies: []"
+  , "# miso: the miso of this release of the tool, locked in miso.lock; containers,"
+  , "# mtl, ... come with the tool; add other packages here"
+  , "dependencies: [miso]"
   ]
 
 counterHs :: String -> String

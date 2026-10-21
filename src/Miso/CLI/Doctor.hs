@@ -37,7 +37,11 @@ doctor = do
   pkgs <- if dbOk then listDirectory (db ++ "/packages") else pure []
   let hasPkg p = any ((p ++ "-") `isPrefixOf`) pkgs
   check (hasPkg "base") "base" "the package database is damaged; reinstall: miso upgrade"
-  check (hasPkg "miso") "miso" "the package database is damaged; reinstall: miso upgrade"
+  -- miso: prebuilt next to the packages (miso-prebuilt), or among them (a
+  -- release from before projects depended on miso)
+  hasDefault <- doesFileExist (db ++ "/miso-default")
+  prebuilt <- if hasDefault then doesDirectoryExist (db ++ "/miso-prebuilt/packages") else pure False
+  check (prebuilt || hasPkg "miso") "miso" "the package database is damaged; reinstall: miso upgrade"
   cpphs <- doesFileExist (parent exe ++ "/cpphs" ++ exeSuffix)
   check cpphs "cpphs (for modules with CPP)" ("missing next to " ++ exe ++ "; reinstall: miso upgrade")
   mhome <- misoHome
