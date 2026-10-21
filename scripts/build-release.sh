@@ -178,6 +178,9 @@ scripts/ship-source.sh "$db" transformers "$work/src/mhs-transformers"
 scripts/ship-source.sh "$db" mtl "$work/src/mhs-mtl"
 scripts/ship-source.sh "$db" containers "$work/src/mhs-containers/containers"
 scripts/ship-source.sh "$db" miso "$work/src/miso" "$misoflags"
+# miso is not on every project's package path: a project depends on it, at
+# the commit of flake.lock, and installs this prebuilt one
+scripts/prebuilt-miso.sh "$db" https://github.com/dmjio/miso "$misorev" "$misoflags"
 
 # 3. The miso tool
 say "building miso"

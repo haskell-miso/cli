@@ -11,7 +11,7 @@ miso new hello
 cd hello
 # data-default-class needs data-default, which does not come with miso:
 # miso installs it too (by name, then locked, then from vendor/)
-sed -e 's/^target: browser/target: native/' -e 's/^dependencies: \[\]/dependencies: [split, data-default-class]/' miso.yml > miso.yml.new
+sed -e 's/^target: browser/target: native/' -e 's/^dependencies: \[miso\]/dependencies: [split, data-default-class]/' miso.yml > miso.yml.new
 mv miso.yml.new miso.yml
 cat > app/Main.hs <<'HS'
 {-# LANGUAGE CPP #-}
@@ -114,7 +114,7 @@ case "$page" in *served*) ;; *) echo "smoke test: miso serve did not serve the p
 cd "$tmp"
 miso new hello2 > /dev/null
 cd hello2
-sed -e 's/^target: browser/target: native/' -e 's/^dependencies: \[\]/dependencies: [split]/' miso.yml > miso.yml.new
+sed -e 's/^target: browser/target: native/' -e 's/^dependencies: \[miso\]/dependencies: [split]/' miso.yml > miso.yml.new
 mv miso.yml.new miso.yml
 printf 'import Data.List.Split (splitOn)\nmain :: IO ()\nmain = putStrLn (concat (splitOn "," "hel,lo"))\n' > app/Main.hs
 miso run > store.log 2>&1 || { echo "smoke test: miso run failed in a second project" >&2; cat store.log >&2; exit 1; }
@@ -146,4 +146,15 @@ sed -e 's/name: transformers/name: base/' -e 's/version: 0.6.1.1/version: 1.0/' 
 mv miso.yml.new miso.yml
 if miso install > base.log 2>&1; then echo "smoke test: replacing base did not fail" >&2; exit 1; fi
 grep -q 'base comes with miso as part of its compiler' base.log || { echo "smoke test: no error for replacing base" >&2; cat base.log >&2; exit 1; }
+# a new project depends on miso, the miso of the release: installed as it
+# came with the tool (not built), and locked at its commit
+cd "$tmp"
+miso new hello4 > /dev/null
+cd hello4
+grep -q '^dependencies: \[miso\]' miso.yml || { echo "smoke test: a new project does not depend on miso" >&2; cat miso.yml >&2; exit 1; }
+miso install > miso.log 2>&1 || { echo "smoke test: miso install failed in a new project" >&2; cat miso.log >&2; exit 1; }
+grep -q 'Installing miso .*(built already, ' miso.log || { echo "smoke test: miso was built, not installed as it came" >&2; cat miso.log >&2; exit 1; }
+ls .miso/mcabal/mhs-*/packages/miso-*.pkg >/dev/null || { echo "smoke test: miso is not in .miso/" >&2; exit 1; }
+miso lock > /dev/null
+grep -q '^    git: https://github.com/dmjio/miso$' miso.lock || { echo "smoke test: miso lock did not lock miso" >&2; cat miso.lock >&2; exit 1; }
 echo "smoke test: ok"

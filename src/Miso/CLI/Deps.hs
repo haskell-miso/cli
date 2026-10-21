@@ -82,7 +82,8 @@ data Unit = Unit
 -- a local directory, nor something built against one) is kept in the store
 -- (Miso.CLI.Store), and copied from there when another project needs it.
 installDeps :: Config -> IO ()
-installDeps cfg = do
+installDeps cfg0 = do
+  cfg <- withMiso cfg0
   setupEnv
   root <- projectRoot >>= maybe (failWith ("no " ++ configFile ++ " here")) pure
   let db = projectDb root
@@ -231,10 +232,11 @@ installLocked _ db _ tool replaced items _ = do
   done0 <- readStamp db
   let done = [ k | k <- done0, not (any (\n -> (n ++ "-") `isPrefixOf` k) dropped) ]
   -- (a local package is installed again when its files change)
-  let todo = [ (u, k) | ((u, _), (_, k)) <- zip ordered ids, keyStamp k `notElem` done ]
+  let todo = [ (u, ds, k) | ((u, ds), (_, k)) <- zip ordered ids, keyStamp k `notElem` done ]
+      planned = map (nameOf . fst) ordered
   if null todo
     then step "dependencies are installed"
-    else forM_ todo $ \(u, k) -> do
+    else forM_ todo $ \(u, ds, k) -> do
       let d = uDep u
           ver = case (uLocked u, uTool u) of
                   (Just l, _) -> lockedAt l
@@ -242,11 +244,19 @@ installLocked _ db _ tool replaced items _ = do
                   _ -> maybe "" (" " ++) (depVersion d)
           what = depName d ++ ver
       fromCache <- case k of
-        Stored sid _ -> do
+        Stored sid keyLines -> do
           maybe (pure ()) (\v -> removeOtherVersions db (nameOf u) v) (unitVersion u)
           got <- fromStore db sid
           when got $ info ("Installing " ++ what ++ " (built already, from the store)")
-          pure got
+          -- the release's miso, built against the tool's packages
+          pre <- case uLocked u of
+            Just (LockedGit "miso" repo _ c _) | not got, all (`notElem` planned) ds ->
+              fromPrebuilt db repo c (maybe "" id (depFlags d))
+            _ -> pure False
+          when pre $ do
+            info ("Installing " ++ what ++ " (built already, as it came with this miso)")
+            toStore db sid (depName d ++ "-" ++ maybe "" id (unitVersion u) ++ ".pkg") keyLines
+          pure (got || pre)
         _ -> pure False
       unless fromCache $ do
         info $ case uTool u of
@@ -335,7 +345,7 @@ sourceOf vend d ml =
       unless unpacked $ run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
       pure (Just dir, Nothing)
     (_, Just (LockedGit n repo _ c _)) -> do
-      dir <- gitCheckout n repo c
+      dir <- checkoutAt n repo c
       pure (Just dir, Nothing)
     (_, Nothing) -> case (depGit d, depPath d, depVersion d) of
       (_, Just dir, _) -> do
@@ -547,7 +557,8 @@ listPackages = do
 -- versions, and dropping those no longer needed.  miso update moves all of
 -- them to the versions of a new package list.
 lockDeps :: Config -> IO ()
-lockDeps cfg = do
+lockDeps cfg0 = do
+  cfg <- withMiso cfg0
   setupEnv
   old <- maybe [] id <$> readLock
   info ("Locking the dependencies in " ++ lockFile)
@@ -563,7 +574,8 @@ lockDeps cfg = do
 -- | The libraries of the tool the project uses (those it does not
 -- replace), as name-version, for miso.lock.
 usedToolLibraries :: Config -> IO [String]
-usedToolLibraries cfg = do
+usedToolLibraries cfg0 = do
+  cfg <- withMiso cfg0
   tool <- bundledPackages
   replaced <- filterM (isReplacement tool) (allDeps cfg)
   pure [ bName b ++ "-" ++ bVersion b | b <- tool, bSource b /= Nothing, bName b `notElem` map depName replaced ]
@@ -572,7 +584,8 @@ usedToolLibraries cfg = do
 -- snapshot), and every package locked again at its version, git
 -- dependencies at the commit of their rev now; then install them.
 updateDeps :: Config -> IO ()
-updateDeps cfg = do
+updateDeps cfg0 = do
+  cfg <- withMiso cfg0
   setupEnv
   info "Updating the package list"
   withGlobalCabal (runSelf "mcabal update")
@@ -647,7 +660,8 @@ vendoredDir vs ml d = do
 -- the packages they need.  Local dependencies, and the packages that come
 -- with the tool or with MicroHs, are not (they are not locked).
 vendorDeps :: Config -> IO ()
-vendorDeps cfg = do
+vendorDeps cfg0 = do
+  cfg <- withMiso cfg0
   lockDeps cfg
   lock <- maybe [] id <$> readLock
   old <- maybe [] id <$> readVendor
@@ -694,8 +708,12 @@ vendorDeps cfg = do
           run ("mv " ++ quote (tmp ++ "/" ++ n ++ "-" ++ v) ++ " " ++ quote dir)
         LockedGit n repo _ c _ -> do
           -- the files of the commit, without .git and what builds left there
-          src <- gitCheckout n repo c
-          run ("git -C " ++ quote src ++ " archive --format=tar " ++ quote c ++ " | tar -xf - -C " ++ quote tmp)
+          -- (the release's miso is its source, not a checkout)
+          src <- checkoutAt n repo c
+          isRepo <- doesDirectoryExist (src ++ "/.git")
+          if isRepo
+            then run ("git -C " ++ quote src ++ " archive --format=tar " ++ quote c ++ " | tar -xf - -C " ++ quote tmp)
+            else run ("cd " ++ quote src ++ " && tar -cf - --exclude=dist-mcabal . | tar -xf - -C " ++ quote tmp)
           run ("mv " ++ quote tmp ++ " " ++ quote dir)
       run ("rm -rf " ++ quote tmp)
       step ("+ " ++ dir ++ " " ++ describe l)

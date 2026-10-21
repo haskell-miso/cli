@@ -29,6 +29,12 @@ module Miso.CLI.Store
   , pkgSums
   , removeOtherVersions
   , toolView
+  , MisoDefault (..)
+  , misoDefault
+  , isDefaultMiso
+  , defaultMisoDep
+  , checkoutAt
+  , fromPrebuilt
   ) where
 
 import Control.Monad (filterM, forM, forM_, unless, when)
@@ -38,7 +44,8 @@ import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileE
 import MicroHs.Compile (mhsVersion)
 
 import Miso.CLI.Color
-import Miso.CLI.Lock (sha256File)
+import Miso.CLI.Config (Dep (..))
+import Miso.CLI.Lock (gitCheckout, sha256File)
 import Miso.CLI.Util
 
 -- | A package that comes with the tool.
@@ -184,6 +191,74 @@ toolView root tool replaced = do
   where
     -- a link (on Windows, MSYS2 copies)
     link from to = run ("ln -s " ++ quote from ++ " " ++ quote to)
+
+-----------------------------------------------------------------------------
+-- The miso of the release
+--
+-- miso is not one of the tool's packages: a project depends on it, as on any
+-- other, and locks it.  A dependency on miso with no source of its own
+-- (- miso) is the miso of the release: mhs-VERSION/miso-default has its
+-- repository, commit, version and cabal flags, mhs-VERSION/miso-sources its
+-- source, and mhs-VERSION/miso-prebuilt the package built from them
+-- (scripts/prebuilt-miso.sh), which is installed instead of building it
+-- again.  A release without miso-default has miso among its packages.
+
+data MisoDefault = MisoDefault
+  { mdRepo    :: String
+  , mdCommit  :: String
+  , mdVersion :: String
+  , mdFlags   :: String
+  } deriving (Show, Eq)
+
+misoDefault :: IO (Maybe MisoDefault)
+misoDefault = do
+  db <- toolDb
+  let f = db ++ "/miso-default"
+  there <- doesFileExist f
+  if not there then pure Nothing else do
+    s <- readFile' f
+    let kvs = [ (k, dropWhile (== ' ') (drop 1 v)) | l <- lines s, let (k, v) = break (== ':') l ]
+    pure (MisoDefault <$> lookup "repository" kvs <*> lookup "commit" kvs <*> lookup "version" kvs
+                      <*> Just (maybe "" id (lookup "flags" kvs)))
+
+-- | The dependency on the miso of the release: from its repository, with no
+-- rev of its own (it is locked at the release's commit), and its flags.
+defaultMisoDep :: MisoDefault -> Maybe String -> Dep
+defaultMisoDep m fl = Dep "miso" (Just (mdRepo m)) Nothing Nothing (Just (maybe (mdFlags m) id fl)) Nothing
+
+isDefaultMiso :: MisoDefault -> Dep -> Bool
+isDefaultMiso m d = depName d == "miso" && depGit d == Just (mdRepo m) && depRev d == Nothing
+
+-- | The source of a package at a commit of a repository: the release's
+-- (miso at its commit, without a download), or a checkout.
+checkoutAt :: String -> String -> String -> IO FilePath
+checkoutAt n repo c = do
+  md <- misoDefault
+  db <- toolDb
+  case md of
+    Just m | n == "miso", repo == mdRepo m, c == mdCommit m -> do
+      let tarball = db ++ "/miso-sources/miso-" ++ mdVersion m ++ ".tar.gz"
+      has <- doesFileExist tarball
+      if has then bundledSourceDir (Bundled "miso" (mdVersion m) "" (Just tarball) (Just (mdFlags m)))
+             else gitCheckout n repo c
+    _ -> gitCheckout n repo c
+
+-- | Copy the release's prebuilt miso into a package database, if it is the
+-- one: the release's commit and flags (and built against the tool's
+-- packages, which the caller knows).
+fromPrebuilt :: FilePath -> String -> String -> String -> IO Bool
+fromPrebuilt db repo c fl = do
+  md <- misoDefault
+  tdb <- toolDb
+  let dir = tdb ++ "/miso-prebuilt"
+  there <- doesDirectoryExist (dir ++ "/packages")
+  case md of
+    Just m | there, repo == mdRepo m, c == mdCommit m, words fl == words (mdFlags m) -> do
+      createDirectoryIfMissing True db
+      run ("cp -R " ++ quote dir ++ "/. " ++ quote db ++ "/")
+      run ("chmod -R u+w " ++ quote db)
+      pure True
+    _ -> pure False
 
 -----------------------------------------------------------------------------
 -- The store
