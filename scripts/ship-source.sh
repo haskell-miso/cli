@@ -15,6 +15,8 @@ nv=$(cd "$db/packages" && ls | grep -E "^$name-[0-9.]+\.pkg$" | sed 's/\.pkg$//'
 tmp=$(mktemp -d)
 mkdir "$tmp/$nv"
 (cd "$dir" && tar -cf - --exclude=.git --exclude=dist-mcabal .) | tar -xf - -C "$tmp/$nv"
+# (a source in the nix store is read-only, and tar keeps that)
+chmod -R u+w "$tmp"
 mkdir -p "$db/miso-sources"
 (cd "$tmp" && tar -czf "$db/miso-sources/$nv.tar.gz" "$nv")
 if [ -n "$flags" ]; then printf '%s\n' "$flags" > "$db/miso-sources/$nv.flags"; fi
