@@ -13,8 +13,10 @@ module Miso.CLI.Build
 
 import Control.Concurrent (threadDelay)
 import Control.Monad (filterM, forM, unless, when)
+import Data.Char (toLower)
 import Data.List (intercalate, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+import qualified System.Info as Info
 
 import Miso.CLI.Color
 import Miso.CLI.Config
@@ -139,6 +141,8 @@ programArgs devBuild cfg exe out = do
       -- browser_rts: the runtime of miso dev's builds (devComb)
       browser = maybe False (`elem` ["browser", "browser_rts"]) (exeTarget exe)
       check = maybe True (const False) out
+      -- the native linker is GNU ld on Linux (macOS's ld64 needs no help)
+      gnuLd = map toLower Info.os == "linux"
   pure $ [ "-i" ++ d | d <- programDirs cfg exe ]
       ++ [ "-I" ++ d | d <- incs ] ++ concatMap cppOptions natives
       ++ (if isNat || check then [] else maybe [] (\t -> ["-t" ++ t]) (exeTarget exe))
@@ -149,6 +153,10 @@ programArgs devBuild cfg exe out = do
             ++ [ j | not isNat, j <- js ]
             ++ concat [ ["-optc", o] | n <- natives, o <- ccOptions n ]
             ++ concat [ ["-optl", o] | n <- natives, o <- ldOptions n ]
+            -- mhs puts these before the program's C file, and GNU ld (with
+            -- --as-needed, the default on Ubuntu and Debian) drops a library
+            -- that nothing before it needs: so on Linux, link them anyway
+            ++ [ o | isNat, gnuLd, any (not . null . extraLibraries) natives, o <- ["-optl", "-Wl,--no-as-needed"] ]
             ++ concat [ ["-optl", "-l" ++ l] | n <- natives, l <- extraLibraries n ]
             -- the instructions for exceptions (and longjmp) that browsers
             -- keep; emcc still makes the old, deprecated try by default
