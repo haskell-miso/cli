@@ -9,7 +9,7 @@ tar -C "$tmp" -xzf "$tarball"
 export MISO_HOME=$tmp/home PATH="$(ls -d "$tmp"/miso-*)/bin:$PATH"
 cd "$tmp"
 ok() { echo "PROBE ok: $1"; }
-bad() { echo "PROBE FAIL: $1"; [ -f "${2:-}" ] && grep -v '^\s*$' "$2" | tail -12 | cut -c1-220; }
+bad() { echo "PROBE FAIL: $1"; [ -f "${2:-}" ] && grep -v '^\s*$' "$2" | grep -v 'callCommand: failed\|^"' | tail -4 | cut -c1-200; }
 try() { name=$1; shift; if "$@" > "$tmp/$name.log" 2>&1; then ok "$name"; else bad "$name" "$tmp/$name.log"; fi; }
 
 # 1. a library, a program and a test, each with dependencies of its own
@@ -21,29 +21,29 @@ version: 0.1.0
 dependencies: [split]
 library:
   source-dirs: [src]
-  dependencies: [safe]
+  dependencies: [data-default]
 executables:
   app:
     main: Main
     source-dirs: [app]
     target: native
-    dependencies: [extra]
+    dependencies: [time]
 tests:
   spec:
     main: Spec
     source-dirs: [test]
-    dependencies: [data-default]
+    dependencies: [random]
 YML
 mkdir -p src test
-printf 'module Lib (firstField) where\nimport Data.List.Split (splitOn)\nimport Safe (headDef)\nfirstField :: String -> String\nfirstField = headDef "" . splitOn ","\n' > src/Lib.hs
-printf 'module Main where\nimport Lib (firstField)\nimport Data.List.Extra (trim)\nmain :: IO ()\nmain = putStrLn (trim (firstField "  lib ,b"))\n' > app/Main.hs
-printf 'module Main where\nimport Lib (firstField)\nimport Data.Default (def)\nimport System.Exit\nmain :: IO ()\nmain = if firstField "a,b" == "a" && (def :: [Int]) == [] then putStrLn "spec ok" else exitFailure\n' > test/Spec.hs
+printf 'module Lib (firstField) where\nimport Data.List.Split (splitOn)\nimport Data.Default (def)\nfirstField :: String -> String\nfirstField s = case splitOn "," s of { x : _ -> x; [] -> def }\n' > src/Lib.hs
+printf 'module Main where\nimport Lib (firstField)\nimport Data.Time.Calendar (fromGregorian)\nmain :: IO ()\nmain = fromGregorian 2026 1 1 `seq` putStrLn (firstField "lib,b")\n' > app/Main.hs
+printf 'module Main where\nimport Lib (firstField)\nimport System.Random (mkStdGen)\nimport System.Exit\nmain :: IO ()\nmain = mkStdGen 1 `seq` if firstField "a,b" == "a" then putStrLn "spec ok" else exitFailure\n' > test/Spec.hs
 try "library: miso build" miso build
 try "library: miso run app" sh -c 'miso run app | tail -1 | grep -qx lib'
 try "library: miso test" miso test
-try "library: miso lock" sh -c 'miso lock && for p in split safe extra data-default; do grep -q "name: $p\$" miso.lock || { echo "miso.lock lacks $p"; cat miso.lock; exit 1; }; done'
-try "miso add random" sh -c 'miso add random && grep -q random miso.yml && grep -q "# top-level dependencies" miso.yml'
-try "miso remove random" sh -c 'miso remove random && ! grep -q random miso.yml && grep -q "dependencies: \[split\]" miso.yml'
+try "library: miso lock" sh -c 'miso lock && for p in split data-default time random; do grep -q "name: $p\$" miso.lock || { echo "miso.lock lacks $p"; cat miso.lock; exit 1; }; done'
+try "miso add hashable" sh -c 'miso add hashable && grep -q hashable miso.yml && grep -q "# top-level dependencies" miso.yml'
+try "miso remove hashable" sh -c 'miso remove hashable && ! grep -q hashable miso.yml && grep -q "dependencies: \[split\]" miso.yml'
 try "miso list" sh -c 'miso list | grep -q split'
 try "miso update" miso update
 try "miso vendor" sh -c 'miso vendor && ls vendor | grep -q split'

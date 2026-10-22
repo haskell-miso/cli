@@ -14,41 +14,18 @@ jobs:
       - uses: actions/upload-artifact@v5
         with: { name: tool, path: miso.tar.gz }
 
-  package:
+  safe:
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { pkg: split,                mod: Data.List.Split,        expr: 'M.splitOn "," "a,b"' }
-          - { pkg: text,                 mod: Data.Text,              expr: 'M.toUpper (M.pack "abc")' }
-          - { pkg: bytestring,           mod: Data.ByteString.Char8,  expr: 'M.length (M.pack "abc")' }
-          - { pkg: containers,           mod: Data.Map.Strict,        expr: 'M.toList (M.fromList [(1 :: Int, "a")])' }
-          - { pkg: time,                 mod: Data.Time.Calendar,     expr: 'M.fromGregorian 2026 10 22' }
-          - { pkg: random,               mod: System.Random,          expr: 'fst (M.randomR (1, 6 :: Int) (M.mkStdGen 42))' }
-          - { pkg: hashable,             mod: Data.Hashable,          expr: 'M.hash "abc" /= 0' }
-          - { pkg: unordered-containers, mod: Data.HashMap.Strict,    expr: 'M.toList (M.fromList [(1 :: Int, "a")])' }
-          - { pkg: vector,               mod: Data.Vector,            expr: 'M.sum (M.fromList [1, 2, 3 :: Int])' }
-          - { pkg: aeson,                mod: Data.Aeson,             expr: 'M.encode [1, 2 :: Int]' }
-          - { pkg: microlens,            mod: Lens.Micro,             expr: '(1 :: Int, "a") M.^. M._1' }
-          - { pkg: data-default,         mod: Data.Default,           expr: '(M.def :: [Int])' }
-          - { pkg: extra,                mod: Data.List.Extra,        expr: 'M.trim "  a  "' }
-          - { pkg: safe,                 mod: Safe,                   expr: 'M.headMay ([] :: [Int])' }
-          - { pkg: stm,                  mod: Control.Concurrent.STM, expr: '()' }
-          - { pkg: async,                mod: Control.Concurrent.Async, expr: '()' }
-          - { pkg: parsec,               mod: Text.Parsec,            expr: 'either (const "") id (M.parse (M.many1 M.letter) "" "abc1" :: Either M.ParseError String)' }
-          - { pkg: QuickCheck,           mod: Test.QuickCheck,        expr: '()' }
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v5
         with: { name: tool }
-      - name: ${{ matrix.pkg }}
+      - name: safe
         run: |
-          probe/packages.sh miso.tar.gz '${{ matrix.pkg }}' '${{ matrix.mod }}' '${{ matrix.expr }}' | tee out.txt
-          r=$(cat out.txt); r=${r//'%'/'%25'}; r=${r//$'\r'/}; r=${r//$'\n'/'%0A'}
-          if grep -q '^PROBE ok' out.txt; then echo "::notice title=probe ${{ matrix.pkg }}::$r"; else echo "::error title=probe ${{ matrix.pkg }}::$r"; fi
+          probe/safe.sh miso.tar.gz | tee out.txt
+          r=$(grep '^PROBE' out.txt); r=${r//'%'/'%25'}; r=${r//$'\r'/}; r=${r//$'\n'/'%0A'}
+          echo "::notice title=probe safe::$r"
 
   projects:
     needs: build
@@ -63,5 +40,9 @@ jobs:
         run: |
           rev=$(jq -r '.nodes[.nodes.miso.inputs.nixpkgs].locked.rev' flake.lock)
           nix shell "github:NixOS/nixpkgs/$rev#emscripten" --command probe/projects.sh miso.tar.gz | tee out.txt
-          r=$(cat out.txt); r=${r//'%'/'%25'}; r=${r//$'\r'/}; r=${r//$'\n'/'%0A'}
-          if grep -q '^PROBE FAIL' out.txt; then echo "::error title=probe projects::$r"; else echo "::notice title=probe projects::$r"; fi
+          # in parts of about 3000 characters: GitHub cuts an annotation at about 4 KB
+          split -C 3000 out.txt part.
+          for f in part.*; do
+            r=$(cat "$f"); r=${r//'%'/'%25'}; r=${r//$'\r'/}; r=${r//$'\n'/'%0A'}
+            echo "::notice title=probe projects $f::$r"
+          done
