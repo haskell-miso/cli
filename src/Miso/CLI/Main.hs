@@ -276,12 +276,19 @@ lint as cfg = do
   r <- runExitCode (unwords (map quote ("hlint" : dirs ++ as)))
   exitWith r
 
--- | miso uninstall [--yes]: remove $MISO_HOME (packages, caches, mcabal's
--- files) and the tool itself where install.sh put it.  It shows what it
--- removes and asks first (--yes does not ask; without a terminal --yes is
--- needed).  It removes only directories that look like a miso installation,
--- never the home directory, and not a tool in the nix store.  Shell files
--- that add miso to PATH are listed, not edited.
+-- | miso uninstall [--yes]: remove what miso put in $MISO_HOME (packages,
+-- caches, mcabal's files) and the tool itself where install.sh put it.  It
+-- shows what it removes and asks first (--yes does not ask; without a
+-- terminal --yes is needed).  Shell files that add miso to PATH are listed,
+-- not edited.
+--
+-- It removes only miso's own files and folders ('misoEntries'), never a
+-- folder as a whole: a folder that holds only those is removed with them,
+-- and one that holds anything else (miso installed as /usr/local/bin/miso,
+-- or MISO_HOME pointing at a shared folder) keeps everything else.  In a
+-- shared folder the caches' generic names (src/, store/, ...) are left too,
+-- as they may not be miso's.  Never the home directory or /, and not a tool
+-- in the nix store.
 uninstall :: [String] -> IO ()
 uninstall as = do
   yes <- case as of
@@ -294,18 +301,22 @@ uninstall as = do
   let inNix = "/nix/store/" `isPrefixOf` tool
       dirs = home : [ tool | not inNix, tool /= home ]
   there <- filterM doesDirectoryExist dirs
-  forM_ there $ \d -> do
+  forM_ there $ \d ->
     when (stripSlash d `elem` ["", stripSlash user]) $
       failWith (d ++ " is your home directory (or /): not removing it; check MISO_HOME")
-    ok <- looksInstalled d
-    unless ok $ failWith (d ++ " does not look like a miso installation (no bin/miso, mcabal/ or mhs-*): not removing it")
-  if null there
-    then success ("Nothing to remove: " ++ home ++ " is not there")
+  plans <- forM there $ \d -> misoEntries (d == home) d
+  let removals = concatMap snd plans
+  if null removals
+    then success ("Nothing to remove: no miso files in " ++ intercalate " or " dirs)
     else do
       info "miso uninstall removes:"
-      forM_ there $ \d -> do
-        size <- maybe "" (takeWhile (`notElem` " \t")) <$> readCommand ("du -sh " ++ quote d ++ " 2>/dev/null")
-        step (d ++ (if null size then "" else " (" ++ size ++ ")"))
+      forM_ removals $ \p -> do
+        size <- maybe "" (takeWhile (`notElem` " \t")) <$> readCommand ("du -sh " ++ quote p ++ " 2>/dev/null")
+        step (p ++ (if null size then "" else " (" ++ size ++ ")"))
+      forM_ [ d | (d, (True, _)) <- zip there plans ] $ \d ->
+        step ("and " ++ d ++ " itself, if that leaves it empty")
+      forM_ [ d | (d, (False, _)) <- zip there plans ] $ \d ->
+        step (d ++ " has other files too: only miso's are removed")
       when inNix $ step ("not " ++ tool ++ " (installed with nix: nix profile remove miso)")
       tty <- isInputTerminal
       go <- if yes then pure True
@@ -322,7 +333,11 @@ uninstall as = do
         let exe = tool ++ "/bin/miso.exe"
         running <- doesFileExist exe
         when running $ () <$ tryRun ("mv -f " ++ quote exe ++ " " ++ quote (tmp ++ "/miso-uninstalled.exe"))
-      run ("rm -rf " ++ unwords (map quote there))
+      run ("rm -rf " ++ unwords (map quote removals))
+      -- the folders left empty: bin/, then the folder itself
+      forM_ there $ \d -> do
+        _ <- tryRun ("rmdir " ++ quote (d ++ "/bin") ++ " 2>/dev/null")
+        tryRun ("rmdir " ++ quote d ++ " 2>/dev/null")
       success "Removed miso"
   -- shell files that add it to PATH
   let rcs = [ user ++ "/" ++ f | f <- [".zshrc", ".zprofile", ".bashrc", ".bash_profile", ".profile", ".config/fish/config.fish"] ]
@@ -338,11 +353,34 @@ uninstall as = do
     stripSlash = reverse . dropWhile (== '/') . reverse
     noAnswer :: IOError -> IO (Maybe String)
     noAnswer _ = pure Nothing
-    looksInstalled d = do
-      bin <- (||) <$> doesFileExist (d ++ "/bin/miso") <*> doesFileExist (d ++ "/bin/miso.exe")
-      mcabal <- doesDirectoryExist (d ++ "/mcabal")
-      entries <- listDirectory d
-      pure (bin || mcabal || any ("mhs-" `isPrefixOf`) entries)
+
+-- | What miso put in a folder: whether the folder holds nothing else (so
+-- it can go too), and the paths to remove.  The tool's files (bin/miso,
+-- bin/cpphs, mhs-*/) are miso's wherever they are.  The caches of
+-- $MISO_HOME (mcabal/, src/, store/, rts/) have generic names, so they are
+-- removed only from a folder that holds nothing but miso's files.
+misoEntries :: Bool -> FilePath -> IO (Bool, [FilePath])
+misoEntries isHome d = do
+  entries <- listDirectory d
+  binEntries <- do
+    b <- doesDirectoryExist (d ++ "/bin")
+    if b then listDirectory (d ++ "/bin") else pure []
+  let toolBins = [ e | e <- binEntries, e `elem` ["miso", "miso.exe", "cpphs", "cpphs.exe"] ]
+      dbs = [ e | e <- entries, isDb e ]
+      caches = if isHome then [ e | e <- entries, e `elem` ["mcabal", "src", "store", "rts", "miso.exe.old"] ] else []
+      ours = dbs ++ caches ++ [ "bin" | all (`elem` toolBins) binEntries ]
+      alone = all (`elem` ours) entries
+      cacheOk = alone || not isHome
+      paths = [ d ++ "/bin/" ++ e | e <- toolBins ] ++ [ d ++ "/" ++ e | e <- dbs ]
+              ++ [ d ++ "/" ++ e | cacheOk, e <- caches ]
+  pure (alone, paths)
+  where
+    -- mhs-VERSION, the tool's package database
+    isDb e = case stripPrefix' "mhs-" e of
+      Just (c : _) -> isDigit c
+      _ -> False
+    stripPrefix' p x = if p `isPrefixOf` x then Just (drop (length p) x) else Nothing
+
 
 -- | Where install.sh is served.
 installUrl :: String
