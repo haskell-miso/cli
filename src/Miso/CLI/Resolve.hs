@@ -228,7 +228,8 @@ resolveTree keep old cfg = do
                   tarball <- hackageTarball n v
                   h' <- sha256File tarball
                   unless (h' == h) $ failWith (n ++ "-" ++ v ++ ": the sha256 of the tarball is " ++ h' ++ ", " ++ lockFile ++ " has " ++ h)
-                  run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
+                  _ <- unpackHackage tarball (n ++ "-" ++ v)
+                  pure ()
                 packageDeps env (concatMap flagsOf (take 1 mroot)) (why chain) dir >>= mapM_ (visit (n : chain))
                 emit l
       -- a Hackage package: kept from miso.lock, or at the package list's
