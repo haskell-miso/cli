@@ -338,11 +338,8 @@ sourceOf vend d ml =
       dir <- vendoredDir vs ml d
       pure (Just dir, Just dir)
     (_, Just (LockedHackage n v h)) -> do
-      home <- misoHome
       tarball <- checkedTarball n v h
-      let dir = home ++ "/src/hackage/" ++ n ++ "-" ++ v
-      unpacked <- doesDirectoryExist dir
-      unless unpacked $ run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
+      dir <- unpackHackage tarball (n ++ "-" ++ v)
       pure (Just dir, Nothing)
     (_, Just (LockedGit n repo _ c _)) -> do
       dir <- checkoutAt n repo c
@@ -355,18 +352,12 @@ sourceOf vend d ml =
       (Just repo, _, _) -> do
         dir <- gitDir d
         cloned <- doesDirectoryExist dir
-        unless cloned $ do
-          step ("cloning " ++ repo)
-          run ("git clone --quiet " ++ quote repo ++ " " ++ quote dir)
-          maybe (pure ()) (\r -> run ("git -C " ++ quote dir ++ " checkout --quiet " ++ quote r)) (depRev d)
+        unless cloned $ cloneAt repo (depRev d) dir
         pure (Just dir, Nothing)
       (_, _, Just v) -> do
         -- a version of miso.yml that the lock does not have yet
-        home <- misoHome
         tarball <- hackageTarball (depName d) v
-        let dir = home ++ "/src/hackage/" ++ depName d ++ "-" ++ v
-        unpacked <- doesDirectoryExist dir
-        unless unpacked $ run ("tar -xzf " ++ quote tarball ++ " -C " ++ quote (home ++ "/src/hackage"))
+        dir <- unpackHackage tarball (depName d ++ "-" ++ v)
         pure (Just dir, Nothing)
       _ -> pure (Nothing, Nothing)
 

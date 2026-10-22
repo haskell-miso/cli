@@ -39,12 +39,14 @@ module Miso.CLI.Lock
   , newestVersion
   , describeChanges
   , hackageTarball
+  , unpackHackage
   , sha256File
   , sha256Tree
   , gitCheckout
+  , cloneAt
   ) where
 
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Data.Char (isDigit, isHexDigit, isSpace, toLower)
 import Data.List (isPrefixOf)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeFile)
@@ -211,13 +213,33 @@ hackageTarball n v = do
   there <- doesFileExist file
   unless there $ do
     step ("downloading " ++ nv)
-    ok <- tryRun ("curl -fsSL -o " ++ quote file ++ " "
-                  ++ quote ("https://hackage.haskell.org/package/" ++ nv ++ "/" ++ nv ++ ".tar.gz"))
+    -- to a .part file, renamed when it is complete: a download cut short
+    -- (Ctrl-C) leaves no tarball, which would be taken as the whole one
+    -- (and, for a package not locked yet, its sha256 locked)
+    let part = file ++ ".part"
+    ok <- tryRun ("curl -fsSL -o " ++ quote part ++ " "
+                  ++ quote ("https://hackage.haskell.org/package/" ++ nv ++ "/" ++ nv ++ ".tar.gz")
+                  ++ " && mv -f " ++ quote part ++ " " ++ quote file)
     unless ok $ do
-      gone <- not <$> doesFileExist file
-      unless gone (removeFile file)
+      _ <- tryRun ("rm -f " ++ quote part)
       failWith ("could not download " ++ nv ++ " from Hackage")
   pure file
+
+-- | A Hackage tarball unpacked in $MISO_HOME/src/hackage/NAME-VERSION (once).
+-- It is unpacked next to it and renamed when complete, so an unpacking cut
+-- short leaves no half of a package to be built later.
+unpackHackage :: FilePath -> String -> IO FilePath
+unpackHackage tarball nv = do
+  home <- misoHome
+  let dir = home ++ "/src/hackage/" ++ nv
+      tmp = dir ++ ".tmp"
+  there <- doesDirectoryExist dir
+  unless there $
+    run ("rm -rf " ++ quote tmp ++ " && mkdir -p " ++ quote tmp
+         ++ " && tar -xzf " ++ quote tarball ++ " -C " ++ quote tmp
+         ++ " && mv " ++ quote (tmp ++ "/" ++ nv) ++ " " ++ quote dir
+         ++ " && rm -rf " ++ quote tmp)
+  pure dir
 
 -- | The sha256 of a file, with sha256sum (Linux, MSYS2) or shasum (macOS).
 sha256File :: FilePath -> IO String
@@ -274,17 +296,41 @@ tagVersion r =
   in  if not (null v) && isDigit (head v) && all (\c -> isDigit c || c == '.') v then Just v else Nothing
 
 -- | A checkout of a git dependency at a commit, in $MISO_HOME/src (cloned
--- once; miso install builds it there).
+-- once; miso install builds it there).  One that is there but not at the
+-- commit (left by an older miso, cut short or moved by hand) is cloned
+-- again, rather than built at the wrong commit.
 gitCheckout :: String -> String -> String -> IO FilePath
 gitCheckout n repo c = do
   home <- misoHome
   let dir = home ++ "/src/" ++ n ++ "-" ++ c
   cloned <- doesDirectoryExist dir
-  unless cloned $ do
-    step ("cloning " ++ repo)
-    run ("git clone --quiet " ++ quote repo ++ " " ++ quote dir)
-    run ("git -C " ++ quote dir ++ " checkout --quiet " ++ quote c)
+  ok <- if cloned then atCommit dir else pure False
+  unless ok $ do
+    when cloned $ do
+      warn (dir ++ " is not at " ++ c ++ ": cloning it again")
+      run ("rm -rf " ++ quote dir)
+    cloneAt repo (Just c) dir
+    at <- atCommit dir
+    unless at $ failWith ("the checkout of " ++ repo ++ " is not at " ++ c)
   pure dir
+  where
+    atCommit d = do
+      out <- readCommand ("git -C " ++ quote d ++ " rev-parse HEAD 2>/dev/null")
+      pure (maybe False (\h -> c `isPrefixOf` takeWhile isHexDigit h) out)
+
+-- | Clone a repository into dir, and check out a rev (a commit, tag or
+-- branch).  It is cloned next to dir and renamed when the checkout is done,
+-- so a clone or checkout that fails or is cut short leaves no dir behind
+-- (one would be taken as complete, at whatever commit it was).
+cloneAt :: String -> Maybe String -> FilePath -> IO ()
+cloneAt repo mrev dir = do
+  let tmp = dir ++ ".tmp"
+  createDirectoryIfMissing True (parent dir)
+  step ("cloning " ++ repo)
+  run ("rm -rf " ++ quote tmp)
+  run ("git clone --quiet " ++ quote repo ++ " " ++ quote tmp)
+  maybe (pure ()) (\r -> run ("git -C " ++ quote tmp ++ " checkout --quiet " ++ quote r)) mrev
+  run ("mv " ++ quote tmp ++ " " ++ quote dir)
 
 -- | The version of the package in a directory: its miso.yml's, or (with
 -- none) its .cabal file's.
@@ -333,7 +379,12 @@ expandCommit d repo short = do
   there <- doesDirectoryExist dir
   if there
     then run ("git -C " ++ quote dir ++ " fetch --quiet")
-    else run ("git clone --quiet --no-checkout " ++ quote repo ++ " " ++ quote dir)
+    else do
+      -- cloned next to it and renamed, so a clone cut short leaves nothing
+      let tmp = dir ++ ".tmp"
+      run ("rm -rf " ++ quote tmp)
+      run ("git clone --quiet --no-checkout " ++ quote repo ++ " " ++ quote tmp)
+      run ("mv " ++ quote tmp ++ " " ++ quote dir)
   out <- readCommand ("git -C " ++ quote dir ++ " rev-parse --verify --quiet " ++ quote (short ++ "^{commit}"))
   case fmap trim out of
     Just c | length c == 40 -> pure c
