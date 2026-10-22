@@ -224,16 +224,36 @@ test as cfg = do
     then success (count (length results) ++ " passed")
     else failWith (show (length failed) ++ " of " ++ count (length results) ++ " failed: " ++ intercalate ", " failed)
 
+-- | Remove what builds made in the project here.  Only in a project (a
+-- folder with miso.yml): elsewhere public/, dist/ and .miso/ are someone
+-- else's (another kind of project, a static site, or, in the home folder,
+-- ~/.miso, the miso installation).  Not .miso/ either when it is
+-- $MISO_HOME or where the tool is installed, as with a project in ~.
 clean :: IO ()
 clean = do
+  isProject <- doesFileExist configFile
+  unless isProject $
+    failWith ("no " ++ configFile ++ " here: miso clean removes what miso built in a project (dist/, public/, .miso/), so it runs in the project's folder")
+  home <- misoHome
+  tool <- toolHome
   let dirs = ["dist", "public", ".mhscache", "dist-mcabal", ".miso-build.log", ".miso"]
   there <- filterM' (\p -> (||) <$> doesDirectoryExist p <*> doesFileExist p) dirs
-  if null there
+  ours <- filterM' (\p -> if p /= ".miso" then pure True else not <$> anyM (sameDir p) [home, tool]) there
+  forM_ [ p | p <- there, p `notElem` ours ] $ \p ->
+    step ("not " ++ p ++ ": it is where miso is installed ($MISO_HOME)")
+  if null ours
     then step "nothing to clean"
     else do
-      run ("rm -rf " ++ unwords (map quote there))
-      success ("Removed " ++ unwords there)
-  where filterM' p = fmap concat . mapM (\x -> (\b -> [ x | b ]) <$> p x)
+      run ("rm -rf " ++ unwords (map quote ours))
+      success ("Removed " ++ unwords ours)
+  where
+    filterM' p = fmap concat . mapM (\x -> (\b -> [ x | b ]) <$> p x)
+    anyM p = fmap or . mapM p
+    -- the same directory, after symbolic links (pwd -P)
+    sameDir a b = do
+      ra <- readCommand ("cd " ++ quote a ++ " 2>/dev/null && pwd -P")
+      rb <- readCommand ("cd " ++ quote b ++ " 2>/dev/null && pwd -P")
+      pure (case (ra, rb) of { (Just x, Just y) -> x == y; _ -> False })
 
 -- | mhs, interactively, with the source dirs and options of miso.yml.
 repl :: IO ()
