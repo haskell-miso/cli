@@ -21,6 +21,7 @@ import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileE
 import qualified MicroCabal.Main as MC
 import MicroHs.Compile (mhsVersion)
 
+import Miso.CLI.Cabalize (cabalized)
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Lock
@@ -332,7 +333,18 @@ unitKey planned toolIds u ds = do
 -- | Where the source of a package is, fetched if needed: Nothing when mcabal
 -- installs it by name (mcabal -r).
 sourceOf :: Maybe [(String, (String, String))] -> Dep -> Maybe Locked -> IO (Maybe FilePath, Maybe String)
-sourceOf vend d ml =
+sourceOf vend d ml = do
+  (mdir, from) <- sourceOf' vend d ml
+  -- a miso project (miso.yml, no .cabal file): built from a copy with the
+  -- .cabal file of its library
+  case mdir of
+    Just dir -> do
+      dir' <- cabalized (Just (maybe (depName d) lockedName ml)) dir
+      pure (Just dir', from)
+    Nothing -> pure (Nothing, from)
+
+sourceOf' :: Maybe [(String, (String, String))] -> Dep -> Maybe Locked -> IO (Maybe FilePath, Maybe String)
+sourceOf' vend d ml =
   case (vend, ml) of
     (Just vs, _) | not (isLocal d) -> do
       dir <- vendoredDir vs ml d

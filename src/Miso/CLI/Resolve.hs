@@ -38,6 +38,7 @@ import qualified MicroCabal.StackageList as MC
 
 import MicroHs.Compile (mhsVersion)
 
+import Miso.CLI.Cabalize (cabalized)
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Lock
@@ -142,7 +143,9 @@ importsMiso cfg = do
 -- and the cabal flags given, with MicroHs's names, as mcabal reads them;
 -- not the package's own (internal) libraries.
 packageDeps :: MC.Env -> [(String, Bool)] -> String -> FilePath -> IO [String]
-packageDeps env fl why dir = do
+packageDeps env fl why dir0 = do
+  -- a miso project: its library, as the .cabal file miso makes of it
+  dir <- cabalized Nothing dir0
   cabals <- filter (".cabal" `isSuffixOf'`) <$> listDirectory dir
   f <- case cabals of
          [f] -> pure f
