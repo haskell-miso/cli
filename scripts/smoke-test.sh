@@ -157,4 +157,22 @@ grep -q 'Installing miso .*(built already, ' miso.log || { echo "smoke test: mis
 ls .miso/mcabal/mhs-*/packages/miso-*.pkg >/dev/null || { echo "smoke test: miso is not in .miso/" >&2; exit 1; }
 miso lock > /dev/null
 grep -q '^    git: https://github.com/dmjio/miso$' miso.lock || { echo "smoke test: miso lock did not lock miso" >&2; cat miso.lock >&2; exit 1; }
+# a miso project with a library: section, as a path: dependency of another
+# project (built from the .cabal file miso cabal makes of it), with a
+# package of its own; and a change to it, picked up
+cd "$tmp"
+mkdir -p greet/src
+printf 'name: greet\nversion: 0.3.0\ndependencies: [split]\nlibrary:\n  source-dirs: [src]\n' > greet/miso.yml
+printf 'module Greet (greet) where\nimport Data.List.Split (splitOn)\ngreet :: String\ngreet = concat (splitOn "," "he,llo")\n' > greet/src/Greet.hs
+(cd greet && miso cabal) | grep -q '^  exposed-modules: Greet$' || { echo "smoke test: miso cabal did not list the library's modules" >&2; (cd greet && miso cabal) >&2; exit 1; }
+miso new usegreet > /dev/null
+cd usegreet
+printf 'name: usegreet\nversion: 0.1.0\nmain: Main\nsource-dirs: [app]\ntarget: native\ndependencies:\n  - name: greet\n    path: ../greet\n' > miso.yml
+printf 'import Greet (greet)\nmain :: IO ()\nmain = putStrLn greet\n' > app/Main.hs
+miso run > greet.log 2>&1 || { echo "smoke test: a miso project as a path dependency did not build" >&2; cat greet.log >&2; exit 1; }
+[ "$(tail -1 greet.log | tr -d '\r')" = hello ] || { echo "smoke test: expected hello from the greet library" >&2; cat greet.log >&2; exit 1; }
+sed -e 's/he,llo/hi,there/' ../greet/src/Greet.hs > ../greet/src/Greet.hs.new && mv ../greet/src/Greet.hs.new ../greet/src/Greet.hs
+miso run > greet2.log 2>&1 || { echo "smoke test: the changed greet library did not build" >&2; cat greet2.log >&2; exit 1; }
+[ "$(tail -1 greet2.log | tr -d '\r')" = hithere ] || { echo "smoke test: the change to the greet library was not picked up" >&2; cat greet2.log >&2; exit 1; }
+[ ! -e ../greet/greet.cabal ] || { echo "smoke test: miso wrote a .cabal file into the dependency's folder" >&2; exit 1; }
 echo "smoke test: ok"

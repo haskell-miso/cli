@@ -56,6 +56,7 @@ miso build            # public/index.js (target: browser)
 | `miso lock` | write `miso.lock`: the dependencies of `miso.yml` and the packages they need; lock what is not locked yet, keep what is |
 | `miso update` | a new package list for mcabal, and `miso.lock` again at its versions (git dependencies at their current commits); then install |
 | `miso vendor` | lock as `miso lock` does, and copy the source of each locked dependency to `vendor/NAME`; builds then install from there, and fail rather than download |
+| `miso cabal` | print the `.cabal` file of the project's library: what another project that depends on it builds it with |
 | `miso doctor` | check the installation and the tools miso needs, and say how to fix what is missing |
 | `miso upgrade [VERSION]` | install the latest release (or `VERSION`) in place |
 | `miso uninstall [--yes]` | remove miso: `$MISO_HOME` (packages, caches) and the tool where `install.sh` put it. It shows what it removes and asks first; it lists the lines of your shell files that add miso to `PATH` (it does not edit them) |
@@ -132,6 +133,14 @@ executables:
 - The top-level `main`, `source-dirs` and `target` (and the fields below)
   cannot be used with `executables:`.  A project with just `library:` is a library: `miso build`
   checks it, and there is nothing to run.
+- Another project can depend on a project with a library, from `git:` or a
+  `path:`, as on any package.  miso builds it from a copy (in
+  `$MISO_HOME/src/cabalized`) with the `.cabal` file of its library, which
+  `miso cabal` prints: its `name`, `version`, modules, dependencies and the
+  fields below.  The checkout itself is not changed.  The `name:` of the
+  dependency is the project's.  Its dependencies are by name (from Hackage,
+  or the tool's); one it takes from `git:` or a `path:` has to be listed in
+  the project that uses it instead.
 
 Tests are programs that run on this machine, and pass when they exit with 0
 (as Cabal's `exitcode-stdio` tests):

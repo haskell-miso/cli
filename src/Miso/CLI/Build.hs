@@ -7,6 +7,7 @@ module Miso.CLI.Build
   , libraryArgs
   , programArgs
   , nativeFiles
+  , libraryFiles
   , modulesIn
   ) where
 
@@ -30,11 +31,21 @@ nativeFiles cfg exe = do
   let lib = fmap libNative (cfgLibrary cfg)
       own = exeNative exe
       dflt = maybe True (const False) lib     -- the program has the defaults
-  (lc, lj, li) <- maybe (pure ([], [], [])) (files True) lib
-  (oc, oj, oi) <- files dflt own
+  (lc, lj, li) <- maybe (pure ([], [], [])) (nativeFilesOf True) lib
+  (oc, oj, oi) <- nativeFilesOf dflt own
   pure (lc ++ oc, lj ++ oj, li ++ oi)
+
+-- | The C, JavaScript and include files of the library (with the defaults
+-- cbits/*.c, jsbits/*.js and include/, where they are there).
+libraryFiles :: Library -> IO ([FilePath], [FilePath], [FilePath])
+libraryFiles lib = nativeFilesOf True (libNative lib)
+
+-- | The C and JavaScript files and include dirs of one component; with dflt,
+-- the defaults apply to what miso.yml does not list.
+nativeFilesOf :: Bool -> Native -> IO ([FilePath], [FilePath], [FilePath])
+nativeFilesOf dflt n = files
   where
-    files dflt n = do
+    files = do
       c <- globs (pick dflt ["cbits/*.c"] (cSources n))
       j <- globs (pick dflt ["jsbits/*.js"] (jsSources n))
       i <- existing (pick dflt ["include"] (includeDirs n))

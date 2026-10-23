@@ -20,6 +20,7 @@ import qualified MicroHs.Main as MHS
 import MicroHs.Compile (mhsVersion)
 
 import Miso.CLI.Build
+import Miso.CLI.Cabalize (cabalFile)
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Deps
@@ -56,6 +57,7 @@ main' = do
     "new" : _          -> failWith "usage: miso new NAME [--template T] (miso templates lists the templates)"
     "init" : as        -> initProject as
     ["templates"]      -> listTemplates
+    ["cabal"]          -> withConfig (\cfg -> cabalFile cfg >>= putStr)
     "build" : as       -> withConfig (build ("--dev" `elem` as) (filter (/= "--dev") as))
     "run" : as         -> withConfig (runProgram as)
     "test" : as        -> withConfig (test as)
@@ -117,6 +119,7 @@ usage = do
     , cmd "lock" "write miso.lock, keeping the versions locked already"
     , cmd "update" "lock Hackage and git dependencies in miso.lock, and install them"
     , cmd "vendor" "copy the locked dependencies' sources to vendor/, to build from"
+    , cmd "cabal" "print the .cabal file of the library (other projects build it from that)"
     ]
   ts <- sequence
     [ cmd "doctor" "check the installation and the tools miso needs"
