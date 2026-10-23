@@ -579,7 +579,14 @@ updateDeps cfg0 = do
   cfg <- withMiso cfg0
   setupEnv
   info "Updating the package list"
-  withGlobalCabal (runSelf "mcabal update")
+  -- In $MISO_HOME, the package list every project shares.  mcabal runs in
+  -- a child (miso mcabal), which sets CABALDIR again from the project it is
+  -- in: so not in the project, and without the MISO_PROJECT this process
+  -- set, or it wrote the new list to the project's .miso/ and the old one
+  -- was copied back over it.
+  global <- globalCabalDir
+  exe <- self
+  withGlobalCabal (run ("cd " ++ quote global ++ " && MISO_PROJECT= " ++ quote exe ++ " mcabal update"))
   old <- maybe [] id <$> readLock
   info ("Locking the dependencies in " ++ lockFile)
   new <- resolveTree False old cfg
