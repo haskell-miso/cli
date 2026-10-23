@@ -175,4 +175,24 @@ sed -e 's/he,llo/hi,there/' ../greet/src/Greet.hs > ../greet/src/Greet.hs.new &&
 miso run > greet2.log 2>&1 || { echo "smoke test: the changed greet library did not build" >&2; cat greet2.log >&2; exit 1; }
 [ "$(tail -1 greet2.log | tr -d '\r')" = hithere ] || { echo "smoke test: the change to the greet library was not picked up" >&2; cat greet2.log >&2; exit 1; }
 [ ! -e ../greet/greet.cabal ] || { echo "smoke test: miso wrote a .cabal file into the dependency's folder" >&2; exit 1; }
+# extra-libraries: a C library linked into a native program (zlib, where
+# the C compiler has it); mhs puts -l before the program's C file, which
+# GNU ld ignores unless told otherwise
+if printf 'int main(void) { return 0; }\n' | cc -x c - -lz -o "$tmp/ccz" 2>/dev/null; then
+  cd "$tmp"
+  miso new zlib > /dev/null
+  cd zlib
+  printf 'name: zlib\nversion: 0.1.0\nmain: Main\nsource-dirs: [app]\ntarget: native\nextra-libraries: [z]\ndependencies: []\n' > miso.yml
+  cat > app/Main.hs <<'HS'
+module Main where
+import Foreign.C.String (CString, peekCString)
+foreign import ccall "zlib.h zlibVersion" zlibVersion :: IO CString
+main :: IO ()
+main = zlibVersion >>= peekCString >>= putStrLn . ("zlib " ++)
+HS
+  miso run > zlib.log 2>&1 || { echo "smoke test: a program with extra-libraries: [z] did not build" >&2; cat zlib.log >&2; exit 1; }
+  grep -q '^zlib [0-9]' zlib.log || { echo "smoke test: the zlib program printed no version" >&2; cat zlib.log >&2; exit 1; }
+else
+  echo "smoke test: no zlib for the C compiler here, extra-libraries not checked"
+fi
 echo "smoke test: ok"
