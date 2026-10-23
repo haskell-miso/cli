@@ -115,14 +115,20 @@ dependentsOf bundled replaced = do
   pure (order [] needed)
 
 -- | The source of a library of the tool, unpacked in
--- $MISO_HOME/src/bundled/mhs-VERSION (once).
+-- $MISO_HOME/src/bundled/mhs-VERSION/NAME-VERSION-CHECKSUM (once).
 bundledSourceDir :: Bundled -> IO FilePath
 bundledSourceDir b = do
   home <- misoHome
   let base = home ++ "/src/bundled/mhs-" ++ mhsVersion
       nv = bName b ++ "-" ++ bVersion b
-      dir = base ++ "/" ++ nv
   tarball <- maybe (failWith (bName b ++ " comes with miso as part of its compiler: it cannot be built again")) pure (bSource b)
+  -- Named by the tarball's sha256 too, not only NAME-VERSION: another
+  -- release can ship another source of the same version (miso at another
+  -- commit, still 1.14.0.0), and src/ outlives an upgrade.  By name and
+  -- version alone, the old source was built (and stored under the new
+  -- one's ID, and vendored as it).
+  h <- take 16 <$> sha256File tarball
+  let dir = base ++ "/" ++ nv ++ "-" ++ h
   there <- doesDirectoryExist dir
   unless there $ do
     createDirectoryIfMissing True base
