@@ -9,6 +9,9 @@ module Miso.CLI.Build
   , nativeFiles
   , libraryFiles
   , modulesIn
+  , emccTargets
+  , emsdk
+  , needEmcc
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -166,11 +169,30 @@ programArgs devBuild cfg exe out = do
             ++ maybe [] (\o -> ["-o" ++ o]) out)
       ++ [exeMain exe]
 
+-- | The mhs targets that compile with emcc (see mhs.conf).
+emccTargets :: [String]
+emccTargets = ["browser", "browser_js", "browser_rts", "emscripten", "emscripten_js"]
+
+emsdk :: String
+emsdk = "https://emscripten.org/docs/getting_started/downloads.html"
+
+-- | Stop before building a program whose target compiles with emcc, when
+-- emcc is not installed: mhs would get as far as running it, and fail with
+-- its whole command line.
+needEmcc :: Executable -> IO ()
+needEmcc exe = case exeTarget exe of
+  Just t | t `elem` emccTargets -> do
+    ok <- have "emcc"
+    unless ok $ failWith (exeName exe ++ " has target: " ++ t ++ ", which needs emcc (emscripten), and it is not installed: "
+                          ++ emsdk ++ " (miso doctor checks the tools)")
+  _ -> pure ()
+
 -- | Build a program, and return the output file.  A browser program is
 -- public/index.js, next to a copy of its static dir, or with several
 -- browser programs, public/NAME/index.js.
 buildProgram :: Bool -> Config -> Executable -> IO FilePath
 buildProgram devBuild cfg exe = do
+  needEmcc exe
   let nat = isNative exe
       web = webDir cfg exe
       outFile = if nat then "dist/" ++ exeName exe else web ++ "/index.js"
