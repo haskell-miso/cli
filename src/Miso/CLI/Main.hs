@@ -4,7 +4,7 @@
 -- (miso mcabal ...) are linked in, and the project commands use them.
 module Miso.CLI.Main (main) where
 
-import Control.Exception (AsyncException (..), catch, throwIO)
+import Control.Exception (AsyncException (..), ErrorCall (..), catch, throwIO)
 import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.Char (isAlpha, isAlphaNum, isDigit)
 import Data.List (intercalate, isInfixOf, isPrefixOf)
@@ -36,7 +36,7 @@ foreign import ccall "exit" c_exit :: CInt -> IO ()
 foreign import ccall "serve.h miso_line_buffered" c_lineBuffered :: IO ()
 
 main :: IO ()
-main = (main' `catch` \e -> do
+main = ((main' `catch` explainError) `catch` \e -> do
   hFlush stdout
   hFlush stderr
   c_exit (case e of { ExitSuccess -> 0; ExitFailure n -> fromIntegral n }))
@@ -44,6 +44,26 @@ main = (main' `catch` \e -> do
   `catch` \e -> case e of
     UserInterrupt -> putStrLn "" >> hFlush stdout >> c_exit 130
     _ -> throwIO e
+
+-- | An error from the code miso runs in its own process (mcabal's, and
+-- System.Process's callCommand) said as miso says its own: "error: ...",
+-- without the Haskell exception and source location around it.
+explainError :: ErrorCall -> IO ()
+explainError (ErrorCallWithLocation msg loc) = failWith (explain msg)
+  where
+    explain m = case splitCmd m of
+      Just cmd -> case words cmd of
+        "curl" : ws@(_ : _) -> "could not download " ++ last ws ++ " (check the network connection, or the proxy)"
+        "git" : _ -> "a git command failed (check the network connection, and the repository): " ++ cmd
+        _ -> "command failed: " ++ cmd
+      -- anything else is a bug: keep where it came from
+      Nothing -> loc ++ m
+    -- callCommand's message: "callCommand: failed N, cmd=\n" ++ show cmd
+    splitCmd m
+      | "callCommand: failed " `isPrefixOf` m
+      , (_, rest) <- break (== '=') m
+      , [(cmd, _)] <- reads (dropWhile (`elem` "=\n") rest) = Just cmd
+      | otherwise = Nothing
 
 main' :: IO ()
 main' = do
