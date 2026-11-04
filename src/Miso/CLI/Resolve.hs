@@ -24,7 +24,7 @@ module Miso.CLI.Resolve
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM, forM_, unless, when)
 import Data.Maybe (listToMaybe)
-import Data.IORef (modifyIORef, newIORef, readIORef)
+import Data.IORef (modifyIORef, newIORef, readIORef, writeIORef)
 import Data.List (intercalate, isPrefixOf, nub)
 import Data.Version (showVersion)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
@@ -176,11 +176,19 @@ resolveTree :: Bool -> [Locked] -> Config -> IO [Locked]
 resolveTree keep old cfg = do
   env <- mcabalEnv
   -- mcabal's package list, which every project shares (it runs mcabal
-  -- update if there is none)
-  snapshot <- withGlobalCabal $ do
-    -- (not mcabalEnv, whose setupEnv is the project's $CABALDIR)
-    genv <- (\e -> e { MC.verbose = -1 }) <$> MC.setupEnv
-    map (\p -> (MC.stName p, showVersion (MC.stVersion p))) <$> MC.getPackageList genv
+  -- update if there is none).  Read when a Hackage package needs a version
+  -- from it, not before: a project of the tool's packages (miso,
+  -- containers, ...) locks and builds without the network.
+  snapRef <- newIORef Nothing
+  let getSnapshot = readIORef snapRef >>= \ms -> case ms of
+        Just snap -> pure snap
+        Nothing -> do
+          snap <- withGlobalCabal $ do
+            -- (not mcabalEnv, whose setupEnv is the project's $CABALDIR)
+            genv <- (\e -> e { MC.verbose = -1 }) <$> MC.setupEnv
+            map (\p -> (MC.stName p, showVersion (MC.stVersion p))) <$> MC.getPackageList genv
+          writeIORef snapRef (Just snap)
+          pure snap
   tool <- bundledPackages
   replaced <- filterM (isReplacement tool) (allDeps cfg)
   -- a package of the tool that miso.yml replaces is locked as any other
@@ -223,7 +231,7 @@ resolveTree keep old cfg = do
               -- (a package of the tool is available, but miso.yml replaces it)
               need <- if n `elem` map (pn . depName) replaced then pure True else needsInstall env bundled n
               if not need then pure () else do
-                l <- lockHackage snapshot chain n (depVersion =<< listToMaybe mroot)
+                l <- lockHackage chain n (depVersion =<< listToMaybe mroot)
                 let LockedHackage _ v h = l
                     dir = home ++ "/src/hackage/" ++ n ++ "-" ++ v
                 unpacked <- doesDirectoryExist dir
@@ -237,17 +245,20 @@ resolveTree keep old cfg = do
                 emit l
       -- a Hackage package: kept from miso.lock, or at the package list's
       -- version, or at the version of miso.yml
-      lockHackage snapshot chain n forced = do
+      lockHackage chain n forced = do
         let prev = [ l | l@(LockedHackage m v _) <- old, m == n, maybe True (== v) forced ]
         case prev of
           l : _ | keep || forced /= Nothing -> pure l
           _ -> do
-            v <- case (forced, lookup n snapshot) of
-                   (Just v, _) -> pure v
-                   (_, Just v) -> pure v
-                   _ -> do
-                     step (n ++ " is not in mcabal's package list: Hackage's newest" ++ why chain)
-                     newestVersion n
+            v <- case forced of
+                   Just v -> pure v
+                   Nothing -> do
+                     snapshot <- getSnapshot
+                     case lookup n snapshot of
+                       Just v -> pure v
+                       Nothing -> do
+                         step (n ++ " is not in mcabal's package list: Hackage's newest" ++ why chain)
+                         newestVersion n
             case [ l | l@(LockedHackage _ v' _) <- prev, v' == v ] of
               l : _ -> pure l
               [] -> do
