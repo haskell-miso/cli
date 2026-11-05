@@ -313,6 +313,19 @@ packages:
   package that is not in it gets Hackage's newest version, and `miso lock`
   says so.  The packages that come with the tool, and those built into
   MicroHs (`base`, `text`, `bytestring`, ...), are not locked.
+- The versions `build-depends` take are checked.  A package from Hackage
+  gets a version that the packages that need it take: the package list's
+  when they take it, or else Hackage's newest one they do (`miso lock` says
+  which).  A version that a package does not take is an error before
+  anything is built, and says which package needs what: a `version:` of
+  `miso.yml`, one in `miso.lock`, one of the tool's packages (`containers`,
+  `mtl`, `transformers`), or miso (the release's, or another of
+  `miso.yml`).  When a package read later needs an older version of one
+  chosen before it, `miso lock` resolves again, with the ranges it found
+  choosing the versions from the start (a few times at most).  It does not
+  search other versions to make them fit, as cabal's solver would; the
+  packages built into MicroHs are not checked, as their versions are
+  MicroHs's.
 - `miso lock` locks what is not in `miso.lock` yet (a dependency added to
   `miso.yml`, one whose `git`/`rev` changed, or a package a new one needs),
   keeps the packages that still match at their versions, and drops those no
