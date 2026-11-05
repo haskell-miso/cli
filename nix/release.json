@@ -1,4 +1,21 @@
 {
-  "version": null,
-  "assets": {}
+  "version": "v0.1.0",
+  "assets": {
+    "x86_64-linux": {
+      "url": "https://github.com/haskell-miso/cli/releases/download/v0.1.0/miso-x86_64-linux.tar.gz",
+      "sha256": "7741356dac9db5038a805e8ebcd2f18681e5160d85668f551c3ae05e7b0d25a0"
+    },
+    "aarch64-linux": {
+      "url": "https://github.com/haskell-miso/cli/releases/download/v0.1.0/miso-aarch64-linux.tar.gz",
+      "sha256": "9acad7cd594300dfb4e6b43d7af873b6441dde99d8687bd308020fd6833ea89b"
+    },
+    "aarch64-darwin": {
+      "url": "https://github.com/haskell-miso/cli/releases/download/v0.1.0/miso-aarch64-darwin.tar.gz",
+      "sha256": "4a55991dd66923f77f1d1c484fd0d49da0104a28951415dd547335969d081eb6"
+    },
+    "x86_64-darwin": {
+      "url": "https://github.com/haskell-miso/cli/releases/download/v0.1.0/miso-x86_64-darwin.tar.gz",
+      "sha256": "956c6b3c9cf3c145616e424fd5a7d68676ee5057ca0f7d8f5569c41656dbc64c"
+    }
+  }
 }
