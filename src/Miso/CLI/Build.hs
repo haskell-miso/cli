@@ -11,13 +11,13 @@ module Miso.CLI.Build
   , modulesIn
   , emccTargets
   , emsdk
-  , needEmcc
+  , checkEmcc
   ) where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (filterM, forM, unless, when)
+import Control.Monad (filterM, forM, forM_, unless, when)
 import Data.Char (toLower)
-import Data.List (intercalate, sort)
+import Data.List (intercalate, isPrefixOf, isSuffixOf, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 import qualified System.Info as Info
 
@@ -171,14 +171,33 @@ programArgs devBuild cfg exe out = do
 
 -- | The mhs targets that compile with emcc (see mhs.conf).
 emccTargets :: [String]
-emccTargets = ["browser", "browser_js", "browser_rts", "emscripten", "emscripten_js"]
+emccTargets = ["browser", "browser_js", "browser_rts", "emscripten", "emscripten_js", "emscripten_web"]
 
 emsdk :: String
 emsdk = "https://emscripten.org/docs/getting_started/downloads.html"
 
--- | Stop before building a program whose target compiles with emcc, when
+-- | Stop before building programs whose target compiles with emcc, when
 -- emcc is not installed: mhs would get as far as running it, and fail with
--- its whole command line.
+-- its whole command line.  The commands check first, before installing
+-- the dependencies.  A dev build of a browser program needs emcc only for
+-- a runtime it has not built before (devComb): with one built already it
+-- goes ahead, and devComb stops if it needs another.
+checkEmcc :: Bool -> [Executable] -> IO ()
+checkEmcc devBuild exes = do
+  loader <- rtsLoader
+  cached <- builtRuntimes
+  forM_ exes $ \exe ->
+    unless (devBuild && exeTarget exe == Just "browser" && loader /= Nothing && cached) (needEmcc exe)
+
+-- | Whether $MISO_HOME/rts has a runtime that devComb built for this mhs.
+builtRuntimes :: IO Bool
+builtRuntimes = do
+  dir <- (++ "/rts") <$> misoHome
+  there <- doesDirectoryExist dir
+  if not there then pure False else
+    any (\f -> ("rts-" ++ mhsVersion ++ "-") `isPrefixOf` f && ".js" `isSuffixOf` f) <$> listDirectory dir
+
+-- | Stop when the program's target compiles with emcc and emcc is not installed.
 needEmcc :: Executable -> IO ()
 needEmcc exe = case exeTarget exe of
   Just t | t `elem` emccTargets -> do
@@ -192,7 +211,6 @@ needEmcc exe = case exeTarget exe of
 -- browser programs, public/NAME/index.js.
 buildProgram :: Bool -> Config -> Executable -> IO FilePath
 buildProgram devBuild cfg exe = do
-  needEmcc exe
   let nat = isNative exe
       web = webDir cfg exe
       outFile = if nat then "dist/" ++ exeName exe else web ++ "/index.js"
@@ -278,6 +296,7 @@ devComb cfg exe web loader = do
   let rts = dir ++ "/rts-" ++ mhsVersion ++ "-" ++ key ++ ".js"
   have <- doesFileExist rts
   unless have $ do
+    needEmcc exe
     step "building the runtime with emcc (once, for these foreign imports and C and JavaScript files)"
     runSelf ("mhs " ++ unwords (map quote [ if a == out then "-o" ++ rts ++ ".tmp" else a | a <- rtsArgs ]))
     run ("mv -f " ++ quote (rts ++ ".tmp") ++ " " ++ quote rts)

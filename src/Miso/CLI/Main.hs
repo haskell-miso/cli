@@ -201,9 +201,11 @@ runMcabal as = setupEnv >> withArgs as MCabal.main
 build :: Bool -> [String] -> Config -> IO ()
 build devBuild names cfg = do
   exes <- mapM (either failWith pure . findProgram cfg) names
+  let programs = if null names then cfgExecutables cfg else exes
+  checkEmcc devBuild programs
   installDeps cfg
   when (null names) $ maybe (pure ()) (checkLibrary cfg) (cfgLibrary cfg)
-  forM_ (if null names then cfgExecutables cfg else exes) (buildProgram devBuild cfg)
+  forM_ programs (buildProgram devBuild cfg)
 
 -- | miso run [NAME] [--] [ARGS]: build a native program (the one named, or
 -- the first) and run it.
@@ -232,6 +234,7 @@ test as cfg = do
   when (null (cfgTests cfg)) $
     failWith "miso.yml has no tests (a tests: section, like executables:, of programs that exit with 0 when they pass)"
   ts <- if null names then pure (cfgTests cfg) else mapM (either failWith pure . findTest cfg) names
+  checkEmcc False ts
   installDeps cfg
   outs <- mapM (buildProgram False cfg) ts
   results <- forM (zip ts outs) $ \(t, out) -> do

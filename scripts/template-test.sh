@@ -71,4 +71,14 @@ miso new counter-dev > /dev/null
   grep -q '^==> Changed: .*Main.hs' dev.log || fail "counter-dev: miso dev did not say what changed" dev.log
   echo "template test: counter-dev ok (miso dev)"
 )
+
+# a dev build with the runtime built already needs no emcc
+(
+  cd counter-dev
+  PATH=$(printf '%s\n' "$PATH" | tr ':' '\n' | while read -r d; do [ -x "$d/emcc" ] || printf '%s:' "$d"; done)
+  ! command -v emcc > /dev/null || fail "counter-dev: emcc is still on the PATH"
+  miso build --dev counter-dev > build.log 2>&1 || fail "counter-dev: miso build --dev needed emcc with the runtime built" build.log
+  [ -s public/index.js ] || fail "counter-dev: miso build --dev without emcc made no public/index.js" build.log
+  echo "template test: counter-dev ok (miso build --dev, without emcc)"
+)
 echo "template test: ok"

@@ -11,7 +11,11 @@ cd "$tmp"
 # kept, and checked against miso help at the end
 ran=$tmp/commands-ran
 : > "$ran"
-miso() { printf '%s\n' "${1:-}" >> "$ran"; command miso "$@"; }
+record() { printf '%s\n' "$1" >> "$ran"; }
+miso() { record "${1:-}"; command miso "$@"; }
+# (a command run in the background is recorded, and run with command miso:
+# dash, as /bin/sh, runs a function in the background in a subshell, and
+# kill $! stops that, not miso)
 fail() { echo "smoke test: $1" >&2; [ -f "${2:-}" ] && cat "$2" >&2; exit 1; }
 miso version
 miso new hello
@@ -108,7 +112,8 @@ miso list > list.log
 grep -q '^  split ' list.log || { echo "smoke test: miso list does not show split" >&2; cat list.log >&2; exit 1; }
 # serve: a page from public/
 mkdir -p public && echo '<html><body>served</body></html>' > public/index.html
-miso serve --port 8799 > serve.log 2>&1 &
+record serve
+command miso serve --port 8799 > serve.log 2>&1 &
 pid=$!
 for i in 1 2 3 4 5 6 7 8 9 10; do
   page=$(curl -s http://127.0.0.1:8799/ || true)
@@ -272,7 +277,8 @@ if miso add no-such-package-at-all > add.log 2>&1; then fail "miso add installed
 [ "$(cat miso.yml)" = "$(cat miso.yml.before)" ] || fail "a failed miso add changed miso.yml" miso.yml
 grep -q 'Not added: no-such-package-at-all' add.log || fail "a failed miso add did not say Not added" add.log
 # watch: All good, then a type error when a source changes, then All good
-miso watch > watch.log 2>&1 &
+record watch
+command miso watch > watch.log 2>&1 &
 pid=$!
 wait_for() { # PATTERN LOG: wait up to two minutes for the line
   i=0
@@ -328,6 +334,10 @@ if ! command -v emcc > /dev/null; then
   if miso dev --port 8798 > dev.log 2>&1; then fail "miso dev ran without emcc" dev.log; fi
   grep -q 'which needs emcc' dev.log || fail "no error for miso dev without emcc" dev.log
   ! grep -q 'Serving' dev.log || fail "miso dev served without emcc" dev.log
+  sed 's/^target: browser$/target: emscripten_web/' miso.yml > miso.yml.new
+  mv miso.yml.new miso.yml
+  if miso build > build.log 2>&1; then fail "miso build built for emscripten_web without emcc" build.log; fi
+  grep -q 'target: emscripten_web, which needs emcc' build.log || fail "no error for emscripten_web without emcc" build.log
   cd "$tmp"
 fi
 # mcabal, as the tool runs it
