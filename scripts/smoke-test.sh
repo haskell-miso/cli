@@ -277,6 +277,19 @@ grep -q 'Usage:' help.log || fail "miso with no arguments shows no usage" help.l
 if miso frobnicate > help.log 2>&1; then fail "miso frobnicate did not fail" help.log; fi
 grep -q 'unknown command: miso frobnicate' help.log || fail "no error for an unknown command" help.log
 [ "$(miso --version)" = "$(miso version)" ] || fail "miso --version is not miso version"
+# CMD --help (or -h) shows CMD's usage, and does not run it
+miso new --help > help.log 2>&1 || fail "miso new --help failed" help.log
+grep -q 'Usage: miso new NAME' help.log || fail "miso new --help shows no usage" help.log
+[ ! -e --help ] || fail "miso new --help made a project named --help"
+for a in "add -h" "build --help" "uninstall --help" "new hello7 --help"; do
+  miso $a > help.log 2>&1 || fail "miso $a failed" help.log
+  grep -q "Usage: miso ${a%% *}" help.log || fail "miso $a shows no usage" help.log
+done
+[ ! -e hello7 ] || fail "miso new NAME --help made a project"
+# and a name that is not a package's is not a project's
+if miso new -x > new.log 2>&1; then fail "miso new took the name -x" new.log; fi
+grep -q "a project's name is a letter" new.log || fail "no error for a project named -x" new.log
+[ ! -e -x ] || fail "miso new made a project named -x"
 # templates, and new: the other spelling of --template, an unknown
 # template, a project that is there already
 miso templates > templates.log
