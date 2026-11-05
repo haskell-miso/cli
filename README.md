@@ -15,10 +15,13 @@ sha256.  Then it shows what it will create, replace and remove in `~/.miso`
 asks to add `~/.miso/bin` to `PATH` in your shell's startup file
 (`.zshrc`, `.bashrc` or `.bash_profile`, fish's `config.fish`, or
 `.profile`), and checks the installation with `miso doctor` (which says
-when emcc, for the browser, is missing).  `sh -s -- --yes` does not ask, and
-`--no-modify-path` leaves the startup files alone; `MISO_VERSION=v0.1.0`
-installs that release.  On NixOS it says to install miso with nix
-instead, and installs nothing (`--yes` installs in `~/.miso` anyway):
+when emcc, for the browser, is missing).  `sh -s -- --yes` (or `-y`) does
+not ask, and `--no-modify-path` leaves the startup files alone;
+`MISO_VERSION=v0.1.0` installs that release, `MISO_HOME` installs somewhere
+else, and `MISO_RELEASE_URL` downloads from a mirror (or `file://`).  On
+NixOS it says to install miso with nix instead, and installs nothing
+(`--yes` installs in `~/.miso` anyway, as does a reinstall or `miso
+upgrade` of a miso installed there):
 
 ```sh
 nix profile install github:haskell-miso/cli#release   # the release, prebuilt
@@ -27,31 +30,38 @@ nix profile install github:haskell-miso/cli           # built from source
 
 `#release` is the tarball of the latest GitHub release (the one `install.sh`
 downloads), pinned with its sha256 in `nix/release.json`, which the release
-workflow updates on main after each release.
+workflow updates on main after each release.  Until the first release,
+`nix/release.json` is empty and there is no `#release`.
 
 ```sh
-miso new counter      # a new project: miso.yml, app/Main.hs, static/index.html
+miso new counter      # a new project: miso.yml, app/Main.hs, static/index.html,
+                      # .gitignore and README.md
 cd counter
 miso build            # public/index.js (target: browser)
 ```
 
 ## Commands
 
+[docs/manual.md](docs/manual.md) describes each command in full: its
+arguments, what it writes, and when it fails.  Commands that work on a
+project read `miso.yml` in the current directory (not in a parent).
+
 | command | |
 |---|---|
-| `miso new NAME [--template T]` | a new project; `miso templates` lists the templates (counter, router, canvas) |
-| `miso init` | make the current directory a project. On a terminal it asks for the name (default: the directory's), version, synopsis, author (from git), license and template, one at a time; `--name`, `--version`, `--synopsis`, `--author`, `--license` and `--template` answer them, and `--yes` takes the defaults. It writes the template's files that are not there yet (a `.gitignore` gets the lines it lacks), and a `LICENSE` for BSD-3-Clause, BSD-2-Clause and MIT |
-| `miso build [NAME...]` | install missing dependencies, and build the project of `miso.yml` (or the programs named). On a terminal it shows the last lines of the build as it runs, as `miso dev` does, and the log (`.miso-build.log`) when it fails |
+| `miso new NAME [--template T]` | a new project in the directory NAME (which must not exist), from a template (default counter); `miso templates` lists them (counter, router, canvas). `miso new --template T NAME` works too |
+| `miso init` | make the current directory a project. On a terminal it asks for the name (default: the directory's), version, synopsis, author (from git), license and template, one at a time; `--name`, `--version`, `--synopsis`, `--author`, `--license` and `--template` answer them, and `--yes` (or input that is not a terminal) takes the defaults. It writes the template's files that are not there yet (a `.gitignore` gets the lines it lacks), and a `LICENSE` for BSD-3-Clause, BSD-2-Clause and MIT; license `none` writes no `license:`. It fails where there is a `miso.yml` already |
+| `miso build [NAME...]` | install missing dependencies, type check the library, and build every program of `miso.yml` (or only the programs named, without the library). It checks for emcc first when a program needs it. On a terminal it shows the last lines of the build as it runs, as `miso dev` does, then what mhs said (warnings, or the error; the whole log is `.miso-build.log`) |
 | `miso run [NAME] [ARGS]` | build and run a program (`target: native`; the first one, or NAME) |
 | `miso test [NAME...] [-- ARGS]` | build the tests of `miso.yml` (or those named) and run each, with ARGS; it fails when a test does |
 | `miso dev [NAME] [--port N]` | build a browser program (the first one, or NAME), serve `public/`, and on a change of the sources rebuild and reload the page |
 | `miso serve [--port N]` | serve `public/` (on the first free port from 8000, or N) |
 | `miso watch [NAME]` | type check the library, the programs and the tests (or NAME) on every change, and show the first error, as ghcid does |
 | `miso lint [ARGS]` | run [hlint](https://github.com/ndmitchell/hlint) on the source dirs of `miso.yml`, with ARGS; it reads `.hlint.yaml` |
-| `miso repl` | mhs, interactively, with the project's sources and packages |
-| `miso clean` | remove `dist/`, `public/`, `.miso/`, and the caches |
+| `miso repl` | mhs, interactively: in a project with its sources, `mhs-options` and packages (installed first), elsewhere with the tool's packages. Input that is not a terminal is read as lines, so expressions can be piped to it |
+| `miso clean` | in a project only: remove `dist/`, `public/`, `.miso/`, `.mhscache`, `dist-mcabal/` and `.miso-build.log` (not `.miso/` when it is `$MISO_HOME`) |
 | `miso install` | install the dependencies of `miso.yml`, in the project's `.miso/` |
-| `miso add PKG...` / `miso remove PKG...` | edit the dependencies of `miso.yml` (keeping its comments), and install |
+| `miso add PKG...` | add Hackage packages to the dependencies of `miso.yml` (keeping its comments), and install them; when the install fails, `miso.yml` is left as it was |
+| `miso remove PKG...` | remove dependencies from `miso.yml`; their packages stay in `.miso/` until `miso clean` |
 | `miso list` | the packages: those that come with miso, and in a project the ones it installed in `.miso/` |
 | `miso lock` | write `miso.lock`: the dependencies of `miso.yml` and the packages they need; lock what is not locked yet, keep what is |
 | `miso update` | a new package list for mcabal, and `miso.lock` again at its versions (git dependencies at their current commits); then install |
@@ -59,7 +69,9 @@ miso build            # public/index.js (target: browser)
 | `miso cabal` | print the `.cabal` file of the project's library: what another project that depends on it builds it with |
 | `miso doctor` | check the installation and the tools miso needs, and say how to fix what is missing |
 | `miso upgrade [VERSION]` | install the latest release (or `VERSION`) in place |
-| `miso uninstall [--yes]` | remove miso: `$MISO_HOME` (packages, caches) and the tool where `install.sh` put it. It shows what it removes and asks first; it lists the lines of your shell files that add miso to `PATH` (it does not edit them) |
+| `miso uninstall [--yes]` | remove miso's files: in `$MISO_HOME` (packages, caches; the caches only when the folder holds nothing else) and the tool where `install.sh` put it (not one installed with nix). It shows what it removes and asks first; without a terminal it needs `--yes`. It lists the lines of your shell files that add miso to `PATH` (it does not edit them) |
+| `miso version` | the version of miso and of MicroHs (also `--version`) |
+| `miso help` | the commands (also `--help`, or no command) |
 | `miso mhs ARGS` / `miso mcabal ARGS` | the MicroHs compiler, and MicroCabal |
 
 Output is colored on a terminal; set `NO_COLOR=1` to turn that off.
@@ -88,7 +100,8 @@ author: Ada <ada@example.org>   # optional
 license: BSD-3-Clause      # optional: an SPDX id
 main: Main                 # the main module (default Main)
 source-dirs: [app]         # default [app]
-target: browser            # browser (WebAssembly, needs emcc), browser_js, or native
+target: browser            # browser (WebAssembly) or browser_js (JavaScript), which
+                           # need emcc; or native (the default)
 mhs-options: []            # passed to mhs
 dependencies:
   - split                  # from Hackage (Stackage), with mcabal
@@ -99,12 +112,18 @@ dependencies:
   - name: my-lib           # a local checkout, relative to miso.yml
     path: ../my-lib        # (installed again when its files change)
   - name: aeson            # a version from Hackage, not the package list's
-    version: 2.2.3.0
+    version: 2.2.3.0       # (not for git: or path:, which have their own)
 ```
 
+miso reads a subset of YAML: mappings, block lists, `[a, b]` lists,
+scalars and comments.  A dependency listed in several components must be
+the same everywhere (list it once, at the top level).
+
 `main`, `source-dirs` and `target` there describe the project's one program.
-A project with a library, or with several programs, has sections for them
-instead:
+Without `target`, a program is native.  Another target is passed to mhs
+(`-tTARGET`); `emscripten`, `emscripten_js`, `emscripten_web` and
+`browser_rts` compile with emcc too.  A project with a library, or with
+several programs, has sections for them instead:
 
 ```yaml
 name: todo
@@ -124,6 +143,10 @@ executables:
     dependencies: [containers]   # added to the project's
 ```
 
+- A program's `main` defaults to `Main`, its `source-dirs` to `[app]`, and
+  its `static-dir` to `static` (one that is given must exist).  Program and
+  test names, and the `name` of a project with one program, are a letter,
+  then letters, digits and `-`.
 - Every program can import the library's modules (mhs gets its
   `source-dirs` first).  The library and each program may also have
   `dependencies` and `mhs-options`, added to the project's.
@@ -181,14 +204,14 @@ exception instructions (`-sWASM_LEGACY_EXCEPTIONS=0`), which browsers keep;
 the old `try` instruction is deprecated.
 
 `miso watch` runs `mhs -fno-code` (under a second, where a build with emcc
-takes many) on the library and each program, clears the screen, and shows
+takes many) on the library, each program and each test, clears the screen, and shows
 `All good` or the first error as `file:line:col: message`.  mhs stops at the
 first error, so after fixing one, the next shows on the next save.
 
 ## Packages
 
-Some packages come with the tool, in its package database
-(`~/.miso/mhs-VERSION`): the compiler's (`base`, `ghc-compat`, `array-mhs`,
+Some packages come with the tool, in its package database, next to it
+(`~/.miso/mhs-VERSION` when `install.sh` installed it): the compiler's (`base`, `ghc-compat`, `array-mhs`,
 `template-haskell`), and the libraries `containers`, `mtl` and
 `transformers`.
 
@@ -354,8 +377,13 @@ On Windows miso runs in [MSYS2](https://www.msys2.org) (an MSYS2 shell:
 `pacman -S gcc make tar curl git`, then the install command above).
 
 - A C compiler (`cc`): mhs compiles programs to C.
-- For `target: browser`, [emscripten](https://emscripten.org) (`emcc`).
-- `curl`, `tar`, and `git` (for git dependencies).
+- For the browser targets (`browser`, `browser_js`),
+  [emscripten](https://emscripten.org) (`emcc`).
+- `curl`, `tar`, `sha256sum` or `shasum` (to check downloads), and `git`
+  (for git dependencies).
+- [hlint](https://github.com/ndmitchell/hlint), for `miso lint` only.
+
+`miso doctor` checks them.
 
 ## How it is built
 
@@ -371,7 +399,10 @@ The release tarball is laid out as an mhs installation:
 ```
 miso-aarch64-darwin/
   bin/miso, bin/cpphs (for modules with CPP)
-  mhs-0.16.12.0/       the package database: base, miso, ..., and the runtime sources
+  mhs-0.16.12.0/       the package database: base, containers, mtl, ..., and the runtime sources
+    miso-default         the miso of the release: its repository, commit, version and flags
+    miso-prebuilt/       that miso, built (installed in a project that locks it)
+    miso-sources/        the source of its libraries and of miso, to build them again
 ```
 
 MicroHs and the package database with miso come from the
@@ -401,9 +432,3 @@ repository.  `miso upgrade` downloads `install.sh` from
 `MISO_INSTALL_URL`).  The
 release assets must be downloadable without a GitHub login, so the releases
 need a public repository.
-
-## Phase 2
-
-- `miso dev`: a web server (in the binary) that serves `public/`, rebuilds
-  on changes to the sources, and tells the page to reload (server sent
-  events).
