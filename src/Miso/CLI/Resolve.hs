@@ -273,9 +273,11 @@ resolveTree keep old cfg = do
                   mroot -> do
                     -- (a package of the tool is available, but miso.yml replaces it)
                     need <- if n `elem` map (pn . depName) replaced then pure True else needsInstall env bundled n
-                    -- one of the tool's has its version; one built into MicroHs is not checked
+                    -- a library of the tool has its version; a package of the compiler
+                    -- (base, ...: MicroHs's versions) or built into MicroHs is not checked
                     unless need $
-                      forM_ [ bVersion b | b <- tool, bName b == n, n `elem` bundled ] $ \v -> chooses n v " (it comes with miso)"
+                      forM_ [ bVersion b | b <- tool, bName b == n, n `elem` bundled, bSource b /= Nothing ] $ \v ->
+                        chooses n v " (it comes with miso)"
                     if not need then pure () else do
                       l <- lockHackage chain n (depVersion =<< listToMaybe mroot)
                       let LockedHackage _ v h = l
