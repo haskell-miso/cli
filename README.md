@@ -297,9 +297,12 @@ packages:
   anything is built, and says which package needs what: a `version:` of
   `miso.yml`, one in `miso.lock`, one of the tool's packages (`containers`,
   `mtl`, `transformers`), or miso (the release's, or another of
-  `miso.yml`).  No other versions are tried to make them fit, as cabal's
-  solver would; the packages built into MicroHs are not checked, as their
-  versions are MicroHs's.
+  `miso.yml`).  When a package read later needs an older version of one
+  chosen before it, `miso lock` resolves again, with the ranges it found
+  choosing the versions from the start (a few times at most).  It does not
+  search other versions to make them fit, as cabal's solver would; the
+  packages built into MicroHs are not checked, as their versions are
+  MicroHs's.
 - `miso lock` locks what is not in `miso.lock` yet (a dependency added to
   `miso.yml`, one whose `git`/`rev` changed, or a package a new one needs),
   keeps the packages that still match at their versions, and drops those no

@@ -227,6 +227,25 @@ printf 'name: vers\nversion: 0.1.0\nmain: Main\nsource-dirs: [app]\ntarget: nati
 miso lock > lock.log 2>&1 || fail "miso lock failed with a package that takes split <0.2" lock.log
 grep -A1 '^  - name: split$' miso.lock | grep -q 'hackage: 0\.1\.' || fail "split was not locked at a version that oldsplit takes" miso.lock
 grep -q 'split 0\.1\.[0-9.]*, not .* of mcabal.s package list: oldsplit-0\.1\.0 takes <0\.2' lock.log || fail "miso lock did not say why split is not the package list's" lock.log
+# a package read first takes the package list's split (>=0.1), and one read
+# after it does not (<0.2): miso lock resolves again, with both ranges
+cd "$tmp"
+mkdir anysplit
+cat > anysplit/anysplit.cabal <<'CABAL'
+cabal-version: 2.4
+name: anysplit
+version: 0.1.0
+library
+  exposed-modules: AnySplit
+  build-depends: base, split >=0.1
+CABAL
+miso new vers2 > /dev/null
+cd vers2
+printf 'name: vers2\nversion: 0.1.0\nmain: Main\nsource-dirs: [app]\ntarget: native\ndependencies:\n  - name: anysplit\n    path: ../anysplit\n  - name: oldsplit\n    path: ../oldsplit\n' > miso.yml
+miso lock > lock.log 2>&1 || fail "miso lock did not resolve again for split >=0.1 and split <0.2" lock.log
+grep -q 'resolving again' lock.log || fail "miso lock did not say it resolved again" lock.log
+grep -A1 '^  - name: split$' miso.lock | grep -q 'hackage: 0\.1\.' || fail "split was not locked at a version both packages take" miso.lock
+cd "$tmp/vers"
 cp miso.lock miso.lock.before
 printf 'name: vers\nversion: 0.1.0\nmain: Main\nsource-dirs: [app]\ntarget: native\ndependencies:\n  - name: split\n    version: 0.2.5.1\n  - name: oldsplit\n    path: ../oldsplit\n' > miso.yml
 if miso lock > lock.log 2>&1; then fail "miso lock locked split 0.2.5.1 for a package that takes split <0.2" lock.log; fi
