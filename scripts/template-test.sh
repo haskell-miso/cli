@@ -44,4 +44,31 @@ miso new counter-dev > /dev/null
   [ -s public/index.js ] || fail "counter-dev: miso build --dev made no public/index.js" build.log
   echo "template test: counter-dev ok (miso build --dev)"
 )
+
+# miso dev: serves the page, builds, and builds again when a source changes
+(
+  cd counter-dev
+  NO_COLOR=1 miso dev --port 8797 > dev.log 2>&1 &
+  pid=$!
+  trap 'kill $pid 2>/dev/null || true' EXIT
+  # wait up to ten minutes for the Nth "Built" line
+  built() {
+    i=0
+    while [ "$(grep -c '^==> Built counter-dev' dev.log)" -lt "$1" ]; do
+      i=$((i + 1))
+      [ $i -le 600 ] || fail "counter-dev: miso dev did not build (build $1)" dev.log
+      kill -0 $pid 2>/dev/null || fail "counter-dev: miso dev stopped" dev.log
+      sleep 1
+    done
+  }
+  built 1
+  page=$(curl -s http://127.0.0.1:8797/ || true)
+  case "$page" in *'<script'*) ;; *) fail "counter-dev: miso dev did not serve the page: $page" dev.log ;; esac
+  [ -s public/app.comb ] || fail "counter-dev: miso dev made no public/app.comb" dev.log
+  sleep 1
+  printf '\n-- changed\n' >> app/Main.hs
+  built 2
+  grep -q '^==> Changed: .*Main.hs' dev.log || fail "counter-dev: miso dev did not say what changed" dev.log
+  echo "template test: counter-dev ok (miso dev)"
+)
 echo "template test: ok"
