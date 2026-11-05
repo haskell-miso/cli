@@ -133,16 +133,16 @@ source-dirs: [app]
 target: native
 dependencies:
   - name: transformers
-    version: 0.6.1.1
+    version: 0.6.2.0
 YML
 printf 'import Control.Monad.State\nmain :: IO ()\nmain = print (execState (modify (+1)) (41 :: Int))\n' > app/Main.hs
 miso run > replace.log 2>&1 || { echo "smoke test: miso run failed replacing transformers" >&2; cat replace.log >&2; exit 1; }
-grep -q 'Installing transformers 0.6.1.1' replace.log || { echo "smoke test: transformers 0.6.1.1 was not installed" >&2; cat replace.log >&2; exit 1; }
+grep -q 'Installing transformers 0.6.2.0' replace.log || { echo "smoke test: transformers 0.6.2.0 was not installed" >&2; cat replace.log >&2; exit 1; }
 grep -q 'Building mtl .* again from its source, against transformers' replace.log || { echo "smoke test: mtl was not built again" >&2; cat replace.log >&2; exit 1; }
 [ "$(tail -1 replace.log | tr -d '\r')" = 42 ] || { echo "smoke test: expected 42 replacing transformers" >&2; cat replace.log >&2; exit 1; }
-miso list | grep -q '^  transformers  *0.6.1.1 (instead of the one that comes with miso)' || { echo "smoke test: miso list does not show the replaced transformers" >&2; miso list >&2; exit 1; }
+miso list | grep -q '^  transformers  *0.6.2.0 (instead of the one that comes with miso)' || { echo "smoke test: miso list does not show the replaced transformers" >&2; miso list >&2; exit 1; }
 # replacing a package of the compiler is an error
-sed -e 's/name: transformers/name: base/' -e 's/version: 0.6.1.1/version: 1.0/' miso.yml > miso.yml.new
+sed -e 's/name: transformers/name: base/' -e 's/version: 0.6.2.0/version: 1.0/' miso.yml > miso.yml.new
 mv miso.yml.new miso.yml
 if miso install > base.log 2>&1; then echo "smoke test: replacing base did not fail" >&2; exit 1; fi
 grep -q 'base comes with miso as part of its compiler' base.log || { echo "smoke test: no error for replacing base" >&2; cat base.log >&2; exit 1; }
