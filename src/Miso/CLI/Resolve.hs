@@ -10,6 +10,16 @@
 -- installs them in order, each after what it needs.  The packages that come
 -- with the tool, and those built into MicroHs, are not locked, unless
 -- miso.yml replaces one (git:, path:, or another version:).
+--
+-- The versions the build-depends take are checked: a package from Hackage
+-- gets a version that the packages that need it take (the package list's,
+-- when they take it, or else Hackage's newest that they do), and when the
+-- tree is resolved, a version that a package does not take (one of miso.yml
+-- or miso.lock, one that comes with the tool, or one that a package needs
+-- after its version was chosen) is an error, before anything is built.
+-- There is no backtracking: no other versions are tried to make them fit.
+-- The packages built into MicroHs (base, ...) are not checked, as their
+-- versions are MicroHs's.
 module Miso.CLI.Resolve
   ( resolveTree
   , mcabalNames
@@ -23,10 +33,10 @@ module Miso.CLI.Resolve
 
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (filterM, forM_, unless, when)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (isJust, listToMaybe)
 import Data.IORef (modifyIORef, newIORef, readIORef, writeIORef)
-import Data.List (intercalate, isPrefixOf, nub)
-import Data.Version (showVersion)
+import Data.List (intercalate, isPrefixOf, nub, nubBy)
+import Data.Version (showVersion, versionBranch)
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import qualified System.Info as Info
 
@@ -143,7 +153,12 @@ importsMiso cfg = do
 -- and the cabal flags given, with MicroHs's names, as mcabal reads them;
 -- not the package's own (internal) libraries.
 packageDeps :: MC.Env -> [(String, Bool)] -> String -> FilePath -> IO [String]
-packageDeps env fl why dir0 = do
+packageDeps env fl why dir = nub . map fst . snd <$> packageNeeds env fl why dir
+
+-- | A package's version (of its .cabal file), and the packages it needs
+-- (as 'packageDeps'), each with the versions it takes (Nothing: any).
+packageNeeds :: MC.Env -> [(String, Bool)] -> String -> FilePath -> IO (Maybe String, [(String, Maybe MC.VersionRange)])
+packageNeeds env fl why dir0 = do
   -- a miso project: its library, as the .cabal file miso makes of it
   dir <- cabalized Nothing dir0
   cabals <- filter (".cabal" `isSuffixOf'`) <$> listDirectory dir
@@ -158,14 +173,16 @@ packageDeps env fl why dir0 = do
       MC.Cabal sects = cbl
       sects' = MC.addMissing sects
       own = MC.getCabalName cbl : [ n | MC.Section t n _ <- sects', t `elem` ["library", "foreign-library"] ]
-      deps = [ p | sect@(MC.Section t _ flds) <- sects', t `elem` ["library", "foreign-library", "executable"]
-                 , MC.isBuildable sect, (p, _, _) <- MC.getBuildDepends flds ]
+      deps = [ (p, r) | sect@(MC.Section t _ flds) <- sects', t `elem` ["library", "foreign-library", "executable"]
+                      , MC.isBuildable sect, (p, _, r) <- MC.getBuildDepends flds ]
+      ver = listToMaybe [ showVersion v | MC.Section "global" _ flds <- sects, MC.Field "version" (MC.VVersion v) <- flds ]
+      sameNeed (p, r) (q, r') = p == q && show r == show r'
   -- mcabal's parser fails with error: say which package, and why it is needed
-  r <- try (evaluate (forceList (nub [ p | p <- deps, p `notElem` own ])))
+  r <- try (evaluate (forceList (nubBy sameNeed [ d | d@(p, _) <- deps, p `notElem` own ])))
   case r of
-    Right ps -> pure ps
+    Right ps -> pure (ver, ps)
     Left e -> failWith ("could not read " ++ dir ++ "/" ++ f ++ why ++ ": " ++ show (e :: SomeException))
-  where forceList xs = sum (map length xs) `seq` xs
+  where forceList xs = sum (map (length . show) xs) `seq` xs
 
 -- | Lock the dependencies of miso.yml and what they depend on, in the order
 -- they install in (each package after the packages it needs).  With keep (miso
@@ -196,6 +213,8 @@ resolveTree keep old cfg = do
   home <- misoHome
   md <- misoDefault
   state <- newIORef ([], [])            -- the packages seen, and the lock (reversed)
+  needsRef <- newIORef []               -- (package, versions taken, by which package-version)
+  chosenRef <- newIORef []              -- (package, (its version, where it comes from))
   let pn = patchedName env
       roots = allDeps cfg
       -- the dependencies of miso.yml by that name; miso, when a package
@@ -205,6 +224,14 @@ resolveTree keep old cfg = do
         ds -> ds
       flagsOf d = maybe [] MC.decodeCabalFlags (depFlags d)
       emit l = modifyIORef state (\(seen, out) -> (seen, l : out))
+      -- the version of a package, and where it comes from; and what a
+      -- package (who) needs, with the versions it takes, then visited
+      chooses n v from = modifyIORef chosenRef ((n, (v, from)) :)
+      needs who chain ps = do
+        modifyIORef needsRef ([ (p, r, who) | (p, Just r) <- ps ] ++)
+        mapM_ (visit chain) (nub (map fst ps))
+      named n = maybe n ((n ++ "-") ++)
+      rangesFor n = (\ns -> [ (r, who) | (p, r, who) <- ns, p == n ]) <$> readIORef needsRef
       -- why a package is needed: "(needed by fail, needed by transformers-compat, ...)"
       why chain = if null chain then "" else " (needed by " ++ intercalate ", needed by " chain ++ ")"
       -- a package, by mcabal's name: one of miso.yml, or one a package needs
@@ -217,7 +244,9 @@ resolveTree keep old cfg = do
             d : _ | Just dir <- depPath d -> do
               ok <- doesDirectoryExist dir
               unless ok $ failWith ("dependency " ++ depName d ++ ": no directory " ++ dir)
-              packageDeps env (flagsOf d) (why chain) dir >>= mapM_ (visit (n : chain))
+              (v, ps) <- packageNeeds env (flagsOf d) (why chain) dir
+              forM_ v $ \x -> chooses n x (" (path: " ++ dir ++ ")")
+              needs (named n v) (n : chain) ps
             d : _ | isGit d -> do
               let resolve = case md of
                     -- the release's miso, at its commit
@@ -225,11 +254,17 @@ resolveTree keep old cfg = do
                     _ -> resolveGit d
               l <- maybe resolve pure (if keep then lockedFor pn old d else Nothing)
               dir <- checkoutAt (lkName l) (lkRepo l) (lkCommit l)
-              packageDeps env (flagsOf d) (why chain) dir >>= mapM_ (visit (n : chain))
+              (v0, ps) <- packageNeeds env (flagsOf d) (why chain) dir
+              let v = maybe v0 Just (lkGitVersion l)
+              forM_ v $ \x -> chooses n x (" (git: " ++ lkRepo l ++ " at " ++ take 7 (lkCommit l) ++ ")")
+              needs (named n v) (n : chain) ps
               emit l
             mroot -> do
               -- (a package of the tool is available, but miso.yml replaces it)
               need <- if n `elem` map (pn . depName) replaced then pure True else needsInstall env bundled n
+              -- one of the tool's has its version; one built into MicroHs is not checked
+              unless need $
+                forM_ [ bVersion b | b <- tool, bName b == n, n `elem` bundled ] $ \v -> chooses n v " (it comes with miso)"
               if not need then pure () else do
                 l <- lockHackage chain n (depVersion =<< listToMaybe mroot)
                 let LockedHackage _ v h = l
@@ -241,28 +276,98 @@ resolveTree keep old cfg = do
                   unless (h' == h) $ failWith (n ++ "-" ++ v ++ ": the sha256 of the tarball is " ++ h' ++ ", " ++ lockFile ++ " has " ++ h)
                   _ <- unpackHackage tarball (n ++ "-" ++ v)
                   pure ()
-                packageDeps env (concatMap flagsOf (take 1 mroot)) (why chain) dir >>= mapM_ (visit (n : chain))
+                chooses n v (if isJust (depVersion =<< listToMaybe mroot) then " (version: of miso.yml)" else "")
+                (_, ps) <- packageNeeds env (concatMap flagsOf (take 1 mroot)) (why chain) dir
+                needs (n ++ "-" ++ v) (n : chain) ps
                 emit l
       -- a Hackage package: kept from miso.lock, or at the package list's
       -- version, or at the version of miso.yml
       lockHackage chain n forced = do
+        ranges <- rangesFor n
         let prev = [ l | l@(LockedHackage m v _) <- old, m == n, maybe True (== v) forced ]
+            fits v = all (inVersions v . fst) ranges
+            takenBy = intercalate ", " [ who ++ " takes " ++ showRange r | (r, who) <- ranges ]
         case prev of
-          l : _ | keep || forced /= Nothing -> pure l
+          l : _ | forced /= Nothing || keep && fits (lkVersion l) -> pure l
           _ -> do
             v <- case forced of
                    Just v -> pure v
                    Nothing -> do
                      snapshot <- getSnapshot
                      case lookup n snapshot of
-                       Just v -> pure v
-                       Nothing -> do
-                         step (n ++ " is not in mcabal's package list: Hackage's newest" ++ why chain)
-                         newestVersion n
+                       Just v | fits v -> pure v
+                       listed -> do
+                         when (listed == Nothing) $
+                           step (n ++ " is not in mcabal's package list: Hackage's newest" ++ (if null ranges then "" else " that fits") ++ why chain)
+                         vs <- if null ranges then (: []) <$> newestVersion n else hackageVersions n
+                         case filter fits vs of
+                           -- none fits: the check at the end says which packages disagree
+                           [] -> pure (maybe (maxVersion vs) id listed)
+                           ok -> do
+                             let v = maxVersion ok
+                             forM_ listed $ \lv ->
+                               step (n ++ " " ++ v ++ ", not " ++ lv ++ " of mcabal's package list: " ++ takenBy)
+                             pure v
             case [ l | l@(LockedHackage _ v' _) <- prev, v' == v ] of
               l : _ -> pure l
               [] -> do
                 f <- hackageTarball n v
                 LockedHackage n v <$> sha256File f
   forM_ roots $ \d -> visit [] (pn (depName d))
+  -- every version a package needs, of the versions chosen
+  ns <- reverse <$> readIORef needsRef
+  chosen <- readIORef chosenRef
+  let conflicts = nub [ who ++ " needs " ++ p ++ " " ++ showRange r ++ ", but " ++ p ++ " is " ++ v ++ from
+                      | (p, r, who) <- ns, Just (v, from) <- [lookup p chosen], not (inVersions v r) ]
+  unless (null conflicts) $
+    failWith ("versions that do not fit:\n" ++ intercalate "\n" (map ("  " ++) conflicts)
+              ++ "\n(a version: in miso.yml, or miso update for the newest versions, may help)")
   reverse . snd <$> readIORef state
+
+-----------------------------------------------------------------------------
+-- The versions build-depends take
+
+-- | Is a version (1.2.3) one of a range of build-depends?  An unreadable
+-- version is not checked.
+inVersions :: String -> MC.VersionRange -> Bool
+inVersions v r = maybe True (\x -> inRange (versionBranch x) r) (MC.readVersionM v)
+
+-- | ^>= 1.2.3 is >= 1.2.3 && < 1.3, and == 1.2.* a version that starts with 1.2.
+inRange :: [Int] -> MC.VersionRange -> Bool
+inRange v r = case r of
+  MC.VEQ w -> v == vb w
+  MC.VGT w -> v > vb w
+  MC.VLT w -> v < vb w
+  MC.VLE w -> v <= vb w
+  MC.VGE w -> v >= vb w
+  MC.VGEHat w -> v >= vb w && v < majorAfter (vb w)
+  MC.VEQWild w -> take (length (vb w)) v == vb w
+  MC.VOr a b -> inRange v a || inRange v b
+  MC.VAnd a b -> inRange v a && inRange v b
+  MC.VEQSet ws -> any ((== v) . vb) ws
+  MC.VGEHatSet ws -> any (inRange v . MC.VGEHat) ws
+  where
+    vb = versionBranch
+    majorAfter w = case w of
+      a : b : _ -> [a, b + 1]
+      [a] -> [a, 1]
+      [] -> [0, 1]
+
+-- | A range as build-depends has it.
+showRange :: MC.VersionRange -> String
+showRange r = case r of
+  MC.VEQ w -> "==" ++ showVersion w
+  MC.VGT w -> ">" ++ showVersion w
+  MC.VLT w -> "<" ++ showVersion w
+  MC.VLE w -> "<=" ++ showVersion w
+  MC.VGE w -> ">=" ++ showVersion w
+  MC.VGEHat w -> "^>=" ++ showVersion w
+  MC.VEQWild w -> "==" ++ showVersion w ++ ".*"
+  MC.VOr a b -> showRange a ++ " || " ++ showRange b
+  MC.VAnd a b -> inner a ++ " && " ++ inner b
+  MC.VEQSet ws -> "==" ++ set ws
+  MC.VGEHatSet ws -> "^>=" ++ set ws
+  where
+    inner x@(MC.VOr _ _) = "(" ++ showRange x ++ ")"
+    inner x = showRange x
+    set ws = "{" ++ intercalate ", " (map showVersion ws) ++ "}"

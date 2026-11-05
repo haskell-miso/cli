@@ -207,6 +207,46 @@ HS
 else
   echo "smoke test: no zlib for the C compiler here, extra-libraries not checked"
 fi
+# versions: a package from Hackage gets a version that the packages that
+# need it take, and one that a package does not take (of miso.yml, one
+# that comes with miso, or miso) is an error, before anything is built.
+# (miso lock only: these packages are not built.)
+cd "$tmp"
+mkdir oldsplit
+cat > oldsplit/oldsplit.cabal <<'CABAL'
+cabal-version: 2.4
+name: oldsplit
+version: 0.1.0
+library
+  exposed-modules: OldSplit
+  build-depends: base, split <0.2
+CABAL
+miso new vers > /dev/null
+cd vers
+printf 'name: vers\nversion: 0.1.0\nmain: Main\nsource-dirs: [app]\ntarget: native\ndependencies:\n  - name: oldsplit\n    path: ../oldsplit\n' > miso.yml
+miso lock > lock.log 2>&1 || fail "miso lock failed with a package that takes split <0.2" lock.log
+grep -A1 '^  - name: split$' miso.lock | grep -q 'hackage: 0\.1\.' || fail "split was not locked at a version that oldsplit takes" miso.lock
+grep -q 'split 0\.1\.[0-9.]*, not .* of mcabal.s package list: oldsplit-0\.1\.0 takes <0\.2' lock.log || fail "miso lock did not say why split is not the package list's" lock.log
+cp miso.lock miso.lock.before
+printf 'name: vers\nversion: 0.1.0\nmain: Main\nsource-dirs: [app]\ntarget: native\ndependencies:\n  - name: split\n    version: 0.2.5.1\n  - name: oldsplit\n    path: ../oldsplit\n' > miso.yml
+if miso lock > lock.log 2>&1; then fail "miso lock locked split 0.2.5.1 for a package that takes split <0.2" lock.log; fi
+grep -q 'oldsplit-0\.1\.0 needs split <0\.2, but split is 0\.2\.5\.1 (version: of miso\.yml)' lock.log || fail "no error for a version of miso.yml that a package does not take" lock.log
+[ "$(cat miso.lock)" = "$(cat miso.lock.before)" ] || fail "a miso lock that failed changed miso.lock" miso.lock
+cd "$tmp"
+mkdir oldtool
+cat > oldtool/oldtool.cabal <<'CABAL'
+cabal-version: 2.4
+name: oldtool
+version: 0.1.0
+library
+  exposed-modules: OldTool
+  build-depends: base, containers <0.7, miso <0.1
+CABAL
+cd vers
+printf 'name: vers\nversion: 0.1.0\nmain: Main\nsource-dirs: [app]\ntarget: native\ndependencies:\n  - name: oldtool\n    path: ../oldtool\n' > miso.yml
+if miso lock > lock.log 2>&1; then fail "miso lock locked packages that oldtool does not take" lock.log; fi
+grep -q 'oldtool-0\.1\.0 needs containers <0\.7, but containers is .* (it comes with miso)' lock.log || fail "no error for a version of the tool's containers that a package does not take" lock.log
+grep -q 'oldtool-0\.1\.0 needs miso <0\.1, but miso is .* (git: https://github.com/dmjio/miso at ' lock.log || fail "no error for a version of miso that a package does not take" lock.log
 # help, --help and no arguments show the usage; an unknown command fails
 cd "$tmp"
 for a in help --help; do

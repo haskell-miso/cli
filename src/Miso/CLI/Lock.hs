@@ -37,6 +37,8 @@ module Miso.CLI.Lock
   , lockedName
   , resolveGit
   , newestVersion
+  , hackageVersions
+  , maxVersion
   , describeChanges
   , hackageTarball
   , unpackHackage
@@ -176,7 +178,11 @@ writeLock bundled ls =
 
 -- | The newest version of a package on Hackage that is not deprecated.
 newestVersion :: String -> IO String
-newestVersion n = do
+newestVersion n = maxVersion <$> hackageVersions n
+
+-- | The versions of a package on Hackage that are not deprecated.
+hackageVersions :: String -> IO [String]
+hackageVersions n = do
   out <- readCommand ("curl -fsSL -H 'Accept: application/json' "
                       ++ quote ("https://hackage.haskell.org/package/" ++ n ++ "/preferred"))
   case out of
@@ -184,7 +190,7 @@ newestVersion n = do
     Just json ->
       case normalVersions json of
         [] -> failWith ("package " ++ n ++ " has no versions on Hackage that are not deprecated")
-        vs -> pure (maxVersion vs)
+        vs -> pure vs
 
 -- | The "normal-version" list of Hackage's /preferred JSON.
 normalVersions :: String -> [String]
