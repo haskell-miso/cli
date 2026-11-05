@@ -11,6 +11,7 @@ module Miso.CLI.Deps
   , removeFromYml
   ) where
 
+import Control.Exception (onException)
 import Control.Monad (filterM, foldM, forM, forM_, unless, when)
 import Data.Char (isSpace)
 import Data.List (intercalate, isPrefixOf, nub, sort, sortBy)
@@ -423,8 +424,13 @@ addDeps names = do
     let s' = foldl addToYml s new
     either (\e -> failWith ("could not edit miso.yml: " ++ e)) (const (pure ())) (parseConfig s')
     writeFile configFile s'
+    forM_ new $ \n -> step ("Adding " ++ n)
+    -- a package that cannot be installed is not added: miso.yml goes back
+    -- to what it was
+    withConfig installDeps `onException` do
+      writeFile configFile s
+      warn ("Not added: " ++ intercalate ", " new ++ " (miso.yml is as it was)")
     forM_ new $ \n -> success ("Added " ++ n)
-    withConfig installDeps
 
 removeDeps :: [String] -> IO ()
 removeDeps names = do

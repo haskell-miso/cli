@@ -10,6 +10,7 @@ import System.IO (hFlush, stdout)
 
 import MicroHs.Compile (mhsVersion)
 
+import Miso.CLI.Build (emccTargets, emsdk)
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Util
@@ -115,10 +116,3 @@ doctor = do
     then success "Everything is fine"
     else do
       failWith (show n ++ " problem" ++ (if n == 1 then "" else "s") ++ " found")
-
--- | The mhs targets that compile with emcc (see mhs.conf).
-emccTargets :: [String]
-emccTargets = ["browser", "browser_js", "browser_rts", "emscripten"]
-
-emsdk :: String
-emsdk = "https://emscripten.org/docs/getting_started/downloads.html"

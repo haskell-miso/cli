@@ -66,6 +66,9 @@ dev mport mname cfg = do
          | otherwise -> failWith "miso dev is for browser targets (target: browser in miso.yml)"
   when (isNative exe) $
     failWith (exeName exe ++ " is a native program; miso dev is for browser targets (target: browser in miso.yml)")
+  -- before serving: without emcc no build of it can work (unless a dev
+  -- build's runtime was built already)
+  checkEmcc True [exe]
   -- Serve first (the URL shows at once, and the port is checked before a
   -- long build), then build: the page reloads when the build is done.
   let web = webDir cfg exe
