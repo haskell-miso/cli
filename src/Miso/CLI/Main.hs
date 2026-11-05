@@ -282,6 +282,8 @@ clean = do
       pure (case (ra, rb) of { (Just x, Just y) -> x == y; _ -> False })
 
 -- | mhs, interactively, with the source dirs and options of miso.yml.
+-- Input that is not a terminal is read as lines, so a script can pipe
+-- expressions to it.
 repl :: IO ()
 repl = do
   isProject <- doesFileExist configFile
@@ -289,7 +291,9 @@ repl = do
             then withConfig $ \cfg -> pure ([ "-i" ++ d | d <- allSourceDirs cfg ] ++ cfgMhsOptions cfg ++ maybe [] libMhsOptions (cfgLibrary cfg))
             else pure []
   when isProject $ withConfig installDeps
-  runMhs (args ++ ["--interactive"])
+  -- mhs's line editor needs a terminal; from a pipe, plain lines (--stdin)
+  tty <- isInputTerminal
+  runMhs (args ++ ["--interactive"] ++ [ "--stdin" | not tty ])
 
 -- | Install a new release where this one is: run install.sh (the same
 -- download and checks as a first install) with MISO_HOME set to our

@@ -299,10 +299,11 @@ i=0
 while [ "$(grep -c 'All good' watch.log)" -le "$n" ] && [ $i -lt 240 ]; do i=$((i + 1)); sleep 0.5; done
 kill $pid 2>/dev/null || true
 [ "$(grep -c 'All good' watch.log)" -gt "$n" ] || fail "miso watch did not see the fix" watch.log
-# repl: an expression, with the project's sources
-printf 'main\n1 + 2 :: Int\n:quit\n' | miso repl > repl.log 2>&1 || fail "miso repl failed" repl.log
-grep -q '^cmds' repl.log || fail "miso repl did not run main of the project" repl.log
-grep -q '3' repl.log || fail "miso repl did not evaluate 1 + 2" repl.log
+# repl: expressions from a pipe, with a module of the project's sources
+printf 'module Calc where\nanswer :: Int\nanswer = 42\n' > app/Calc.hs
+printf 'import Calc\nanswer + 1\n:quit\n' | miso repl > repl.log 2>&1 || fail "miso repl failed" repl.log
+tr -d '\r' < repl.log | grep -q '> 43$' || fail "miso repl did not evaluate answer + 1 of the project" repl.log
+rm app/Calc.hs
 # lint: hlint where it is installed, and an error where it is not
 if command -v hlint > /dev/null; then
   miso lint > lint.log 2>&1 || [ $? -eq 1 ] || fail "miso lint failed" lint.log
