@@ -63,7 +63,8 @@ miso new --template T NAME
 ```
 
 Makes a directory `NAME` with a new project from a template (default
-`counter`; [`miso templates`](#miso-templates) lists them):
+`counter`; [`miso templates`](#miso-templates) lists them).  `NAME` is
+the package's name too: a letter, then letters, digits and `-`.
 
 | file | |
 |---|---|
@@ -451,6 +452,11 @@ miso
 ```
 
 Prints the commands.  An unknown command prints them too, and fails.
+
+`miso COMMAND --help` (or `-h`) prints the usage of that command, and does
+not run it.  For `run` and `test`, which give their arguments to the
+program, only `--help` right after the command counts: `miso run app
+--help` runs `app --help`.
 
 ### miso mhs
 

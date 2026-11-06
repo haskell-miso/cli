@@ -71,6 +71,7 @@ main' = do
   case args of
     "mhs" : as         -> runMhs as
     "mcabal" : as      -> runMcabal as
+    c : as | wantsHelp c as -> commandUsage c
     ["new", name]      -> new "counter" name
     ["new", name, "--template", t] -> new t name
     ["new", "--template", t, name] -> new t name
@@ -106,56 +107,79 @@ main' = do
     []                 -> usage
     _                  -> usage >> failWith ("unknown command: miso " ++ unwords args)
 
+-- | The commands, in the sections of miso help: the command as typed,
+-- and what it does.
+commands :: [(String, [(String, String)])]
+commands =
+  [ ("Project",
+    [ ("new NAME [--template T]", "make a new project (miso templates lists them)")
+    , ("init", "make this directory a project (asks for its name, license, ...)")
+    , ("build [NAME...]", "build the project of miso.yml (or the programs named)")
+    , ("run [NAME] [ARGS]", "build and run a program (target: native)")
+    , ("test [NAME...] [-- ARGS]", "build and run the tests (or those named)")
+    , ("dev [NAME] [--port N]", "serve a program, rebuild on changes, and reload the page")
+    , ("serve [--port N]", "serve public/")
+    , ("watch [NAME]", "type check on every change, and show the first error")
+    , ("lint [ARGS]", "run hlint on the project's sources (.hlint.yaml configures it)")
+    , ("repl", "mhs, interactively, with the project's sources")
+    , ("clean", "remove what builds make (dist/, public/, .miso/, caches)")
+    , ("templates", "list the templates of miso new")
+    ])
+  , ("Dependencies",
+    [ ("install", "install the dependencies of miso.yml (in .miso/)")
+    , ("add PKG...", "add dependencies to miso.yml, and install them")
+    , ("remove PKG...", "remove dependencies from miso.yml")
+    , ("list", "list the packages: the tool's, and the project's")
+    , ("lock", "write miso.lock, keeping the versions locked already")
+    , ("update", "lock Hackage and git dependencies in miso.lock, and install them")
+    , ("vendor", "copy the locked dependencies' sources to vendor/, to build from")
+    , ("cabal", "print the .cabal file of the library (other projects build it from that)")
+    ])
+  , ("The tool",
+    [ ("doctor", "check the installation and the tools miso needs")
+    , ("upgrade [VERSION]", "install the latest release (or VERSION)")
+    , ("uninstall [--yes]", "remove miso, its packages and caches (asks first)")
+    , ("version", "show the version")
+    , ("mhs ARGS", "run the MicroHs compiler")
+    , ("mcabal ARGS", "run MicroCabal")
+    ])
+  ]
+
+-- | Whether miso CMD ARGS asks for CMD's help (--help or -h) rather than
+-- running it.  run and test give their programs the arguments after a
+-- name or --, so there only the first one counts.
+wantsHelp :: String -> [String] -> Bool
+wantsHelp c as = c `elem` map (head . words . fst) (concatMap snd commands) && any isHelp asked
+  where
+    asked | c `elem` ["run", "test"] = take 1 as
+          | otherwise = takeWhile (/= "--") as
+    isHelp a = a `elem` ["--help", "-h"]
+
+-- | miso CMD --help: the usage of CMD.
+commandUsage :: String -> IO ()
+commandUsage c = do
+  hdr <- colored 1 [Bold] "Usage:"
+  forM_ [ (u, what) | (_, cs) <- commands, (u, what) <- cs, head (words u) == c ] $ \(u, what) ->
+    putStrLn (hdr ++ " miso " ++ u ++ "\n\n  " ++ what)
+
 usage :: IO ()
 usage = do
   b <- colored 1 [Bold, Magenta] "miso"
   hdr <- colored 1 [Bold] "Usage:"
-  let section t = colored 1 [Bold] t
-      -- a command in cyan, padded to line up its description
-      cmd c what = do
+  -- a command in cyan, padded to line up its description
+  let cmd (c, what) = do
         c' <- colored 1 [Cyan] c
         pure ("  " ++ c' ++ replicate (25 - length c) ' ' ++ what)
-  proj <- section "Project"
-  deps <- section "Dependencies"
-  tool <- section "The tool"
-  ls <- sequence
-    [ cmd "new NAME [--template T]" "make a new project (miso templates lists them)"
-    , cmd "init" "make this directory a project (asks for its name, license, ...)"
-    , cmd "build [NAME...]" "build the project of miso.yml (or the programs named)"
-    , cmd "run [NAME] [ARGS]" "build and run a program (target: native)"
-    , cmd "test [NAME...] [-- ARGS]" "build and run the tests (or those named)"
-    , cmd "dev [NAME] [--port N]" "serve a program, rebuild on changes, and reload the page"
-    , cmd "serve [--port N]" "serve public/"
-    , cmd "watch [NAME]" "type check on every change, and show the first error"
-    , cmd "lint [ARGS]" "run hlint on the project's sources (.hlint.yaml configures it)"
-    , cmd "repl" "mhs, interactively, with the project's sources"
-    , cmd "clean" "remove what builds make (dist/, public/, .miso/, caches)"
-    ]
-  ds <- sequence
-    [ cmd "install" "install the dependencies of miso.yml (in .miso/)"
-    , cmd "add PKG..." "add dependencies to miso.yml, and install them"
-    , cmd "remove PKG..." "remove dependencies from miso.yml"
-    , cmd "list" "list the packages: the tool's, and the project's"
-    , cmd "lock" "write miso.lock, keeping the versions locked already"
-    , cmd "update" "lock Hackage and git dependencies in miso.lock, and install them"
-    , cmd "vendor" "copy the locked dependencies' sources to vendor/, to build from"
-    , cmd "cabal" "print the .cabal file of the library (other projects build it from that)"
-    ]
-  ts <- sequence
-    [ cmd "doctor" "check the installation and the tools miso needs"
-    , cmd "upgrade [VERSION]" "install the latest release (or VERSION)"
-    , cmd "uninstall [--yes]" "remove miso, its packages and caches (asks first)"
-    , cmd "version" "show the version"
-    , cmd "mhs ARGS" "run the MicroHs compiler"
-    , cmd "mcabal ARGS" "run MicroCabal"
-    ]
+  sections <- forM commands $ \(title, cs) -> do
+    t <- colored 1 [Bold] title
+    ls <- mapM cmd cs
+    pure (t : ls)
   foot <- colored 1 [Dim] "miso keeps its files in $MISO_HOME (default ~/.miso).  NO_COLOR=1 turns off colors."
   putStrLn $ unlines $
     [ b ++ " " ++ version ++ " - build miso apps with MicroHs " ++ mhsVersion
     , ""
     , hdr ++ " miso COMMAND"
-    , ""
-    , proj ] ++ ls ++ [ "", deps ] ++ ds ++ [ "", tool ] ++ ts ++ [ "", foot ]
+    , "" ] ++ intercalate [""] sections ++ [ "", foot ]
 
 printVersion :: IO ()
 printVersion = putStrLn ("miso " ++ version ++ " (MicroHs " ++ mhsVersion ++ ")")
@@ -439,6 +463,8 @@ installUrl = "https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh
 -- | A new project from a template.
 new :: String -> String -> IO ()
 new template name = do
+  unless (packageName name) $
+    failWith ("miso new " ++ name ++ ": a project's name is a letter, then letters, digits and - (miso new --help)")
   files <- maybe (listTemplates >> failWith ("no template " ++ template)) pure (templates template name)
   exists <- doesDirectoryExist name
   when exists $ failWith (name ++ " already exists")
@@ -449,6 +475,12 @@ new template name = do
     writeFile file contents
     step file
   success ("Created " ++ name ++ ": cd " ++ name ++ " && miso dev")
+
+-- | A name for a package: a letter, then letters, digits and -.
+packageName :: String -> Bool
+packageName n = case n of
+  c : cs -> isAlpha c && all (\x -> isAlphaNum x || x == '-') cs
+  [] -> False
 
 -- | miso init: make the current directory a project, from a template,
 -- keeping the files that are already there (a .gitignore gets the lines it
@@ -533,9 +565,6 @@ initProject as = do
     options _ = Nothing
     lastPart = reverse . takeWhile (`notElem` "/\\") . reverse
     trimLine = reverse . dropWhile (`elem` " \t\r\n") . reverse . dropWhile (`elem` " \t")
-    packageName n = case n of
-      c : cs -> isAlpha c && all (\x -> isAlphaNum x || x == '-') cs
-      [] -> False
     versionLike v = not (null v) && all (\p -> not (null p) && all isDigit p) (splitDots v)
     splitDots v = case break (== '.') v of
       (x, _ : r) -> x : splitDots r
