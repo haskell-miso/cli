@@ -49,7 +49,7 @@ import Miso.CLI.Color
 import Miso.CLI.Config
 
 version :: String
-version = "0.1.0"
+version = "0.2.0"
 
 -- | The path of the executable, with / (it goes in sh commands).
 self :: IO String
