@@ -1,9 +1,12 @@
--- | miso.lock: the exact versions of the dependencies of miso.yml.
+-- | miso.lock: the exact versions of the dependencies of miso.yml, and of
+-- the packages they depend on (Miso.CLI.Resolve), in the order they install
+-- in.
 --
 -- > # miso.lock: written by miso lock and miso update.  Commit it; do not edit it.
 -- > # Local (path:) dependencies are not locked.
 -- > miso: 0.1.0
--- > mhs: 0.16.10.0
+-- > mhs: 0.16.12.0
+-- > bundled: containers-0.8 mtl-2.3.1 transformers-0.6.1.2
 -- > packages:
 -- >   - name: split               # from Hackage: the version, and the
 -- >     hackage: 0.2.5.1          # sha256 of its tarball
@@ -14,8 +17,13 @@
 -- >     commit: 3d0e...           # package there
 -- >     version: 2.1.3
 --
+-- bundled: the versions of the packages that came with the tool and that the
+-- project uses from it (not the ones it installs itself).  A newer tool may
+-- come with others: miso install says so, and miso lock records them.
+--
 -- miso lock writes it (keeping what is locked already), miso update writes it
--- with the newest versions; miso install and miso build install what it says.
+-- with the versions of mcabal's new package list; miso install and miso
+-- build install what it says, in its order.
 -- A dependency of miso.yml that is not in it (or no longer matches it) is
 -- installed as without a lock, with a warning.  Local dependencies and the
 -- packages that come with the tool are never in it.
@@ -23,17 +31,24 @@ module Miso.CLI.Lock
   ( Locked (..)
   , lockFile
   , readLock
+  , readLockBundled
   , writeLock
   , lockedFor
   , lockedName
-  , resolveDep
+  , resolveGit
+  , newestVersion
+  , hackageVersions
+  , maxVersion
   , describeChanges
   , hackageTarball
+  , unpackHackage
   , sha256File
+  , sha256Tree
   , gitCheckout
+  , cloneAt
   ) where
 
-import Control.Monad (unless)
+import Control.Monad (unless, when)
 import Data.Char (isDigit, isHexDigit, isSpace, toLower)
 import Data.List (isPrefixOf)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeFile)
@@ -67,16 +82,17 @@ lockedName = lkName
 
 -- | The entry of the lock for a dependency of miso.yml, if the lock has one
 -- that still matches it (same source, and for git the same repository and
--- rev).
-lockedFor :: [Locked] -> Dep -> Maybe Locked
-lockedFor lock d
+-- rev).  The lock has the name mcabal installs a package by, which the
+-- function gives (random is random-mhs).
+lockedFor :: (String -> String) -> [Locked] -> Dep -> Maybe Locked
+lockedFor pn lock d
   | isLocal d = Nothing
   | otherwise =
-      case [ l | l <- lock, lkName l == depName d, matches l ] of
+      case [ l | l <- lock, lkName l `elem` [depName d, pn (depName d)], matches l ] of
         l : _ -> Just l
         [] -> Nothing
   where
-    matches (LockedHackage _ _ _) = isHackage d
+    matches (LockedHackage _ v _) = isHackage d && maybe True (== v) (depVersion d)
     matches (LockedGit _ repo rev _ _) = depGit d == Just repo && depRev d == rev
 
 -----------------------------------------------------------------------------
@@ -124,14 +140,27 @@ entry (Map kvs) = do
     str v = Left ("expected a string, found " ++ show v)
 entry v = Left ("bad package " ++ show v)
 
-writeLock :: [Locked] -> IO ()
-writeLock ls =
+-- | The packages of the tool that miso.lock was written with (name-version),
+-- or Nothing if it does not say.
+readLockBundled :: IO (Maybe [String])
+readLockBundled = do
+  ok <- doesFileExist lockFile
+  if not ok then pure Nothing else do
+    s <- readFile' lockFile
+    pure $ case parseYAML s of
+      Right (Map kvs) | Just (Str b) <- lookup "bundled" kvs -> Just (words b)
+      _ -> Nothing
+
+-- | Write the lock, with the tool's packages the project uses (name-version).
+writeLock :: [String] -> [Locked] -> IO ()
+writeLock bundled ls =
   writeFile lockFile $ unlines $
     [ "# miso.lock: written by miso lock and miso update.  Commit it; do not edit it."
     , "# Local (path:) dependencies are not locked."
     , "miso: " ++ version
     , "mhs: " ++ mhsVersion
-    ] ++ (if null ls then ["packages: []"] else "packages:" : concatMap item ls)
+    ] ++ [ "bundled: " ++ unwords bundled | not (null bundled) ]
+    ++ (if null ls then ["packages: []"] else "packages:" : concatMap item ls)
   where
     item (LockedHackage n v h) =
       [ "  - name: " ++ n
@@ -145,26 +174,15 @@ writeLock ls =
       ++ maybe [] (\x -> ["    version: " ++ x]) v
 
 -----------------------------------------------------------------------------
--- Resolving: what miso update locks a dependency to
-
--- | Lock a (Hackage or git) dependency.  An entry of the old lock for the
--- same Hackage version is kept as it is (its tarball was checked when it was
--- locked).
-resolveDep :: [Locked] -> Dep -> IO Locked
-resolveDep old d
-  | isGit d = resolveGit d
-  | otherwise = do
-      v <- newestVersion (depName d)
-      case [ l | l@(LockedHackage n v' _) <- old, n == depName d, v' == v ] of
-        l : _ -> pure l
-        [] -> do
-          f <- hackageTarball (depName d) v
-          h <- sha256File f
-          pure (LockedHackage (depName d) v h)
+-- Resolving: Hackage's newest version, and the commit of a git dependency
 
 -- | The newest version of a package on Hackage that is not deprecated.
 newestVersion :: String -> IO String
-newestVersion n = do
+newestVersion n = maxVersion <$> hackageVersions n
+
+-- | The versions of a package on Hackage that are not deprecated.
+hackageVersions :: String -> IO [String]
+hackageVersions n = do
   out <- readCommand ("curl -fsSL -H 'Accept: application/json' "
                       ++ quote ("https://hackage.haskell.org/package/" ++ n ++ "/preferred"))
   case out of
@@ -172,7 +190,7 @@ newestVersion n = do
     Just json ->
       case normalVersions json of
         [] -> failWith ("package " ++ n ++ " has no versions on Hackage that are not deprecated")
-        vs -> pure (maxVersion vs)
+        vs -> pure vs
 
 -- | The "normal-version" list of Hackage's /preferred JSON.
 normalVersions :: String -> [String]
@@ -201,13 +219,33 @@ hackageTarball n v = do
   there <- doesFileExist file
   unless there $ do
     step ("downloading " ++ nv)
-    ok <- tryRun ("curl -fsSL -o " ++ quote file ++ " "
-                  ++ quote ("https://hackage.haskell.org/package/" ++ nv ++ "/" ++ nv ++ ".tar.gz"))
+    -- to a .part file, renamed when it is complete: a download cut short
+    -- (Ctrl-C) leaves no tarball, which would be taken as the whole one
+    -- (and, for a package not locked yet, its sha256 locked)
+    let part = file ++ ".part"
+    ok <- tryRun ("curl -fsSL -o " ++ quote part ++ " "
+                  ++ quote ("https://hackage.haskell.org/package/" ++ nv ++ "/" ++ nv ++ ".tar.gz")
+                  ++ " && mv -f " ++ quote part ++ " " ++ quote file)
     unless ok $ do
-      gone <- not <$> doesFileExist file
-      unless gone (removeFile file)
+      _ <- tryRun ("rm -f " ++ quote part)
       failWith ("could not download " ++ nv ++ " from Hackage")
   pure file
+
+-- | A Hackage tarball unpacked in $MISO_HOME/src/hackage/NAME-VERSION (once).
+-- It is unpacked next to it and renamed when complete, so an unpacking cut
+-- short leaves no half of a package to be built later.
+unpackHackage :: FilePath -> String -> IO FilePath
+unpackHackage tarball nv = do
+  home <- misoHome
+  let dir = home ++ "/src/hackage/" ++ nv
+      tmp = dir ++ ".tmp"
+  there <- doesDirectoryExist dir
+  unless there $
+    run ("rm -rf " ++ quote tmp ++ " && mkdir -p " ++ quote tmp
+         ++ " && tar -xzf " ++ quote tarball ++ " -C " ++ quote tmp
+         ++ " && mv " ++ quote (tmp ++ "/" ++ nv) ++ " " ++ quote dir
+         ++ " && rm -rf " ++ quote tmp)
+  pure dir
 
 -- | The sha256 of a file, with sha256sum (Linux, MSYS2) or shasum (macOS).
 sha256File :: FilePath -> IO String
@@ -218,6 +256,18 @@ sha256File f = do
   case fmap (takeWhile isHexDigit) out of
     Just h | length h == 64 -> pure h
     _ -> failWith ("could not compute the sha256 of " ++ f ++ " (sha256sum or shasum is needed)")
+
+-- | One sha256 of the files under a directory, their paths and contents,
+-- leaving out what mcabal builds there (dist-mcabal/).
+sha256Tree :: FilePath -> IO String
+sha256Tree dir = do
+  hasSum <- have "sha256sum"
+  let sha = if hasSum then "sha256sum" else "shasum -a 256"
+  out <- readCommand ("cd " ++ quote dir ++ " && find . -type f ! -path './dist-mcabal/*' | LC_ALL=C sort"
+                      ++ " | while IFS= read -r f; do " ++ sha ++ " \"$f\"; done | " ++ sha)
+  case fmap (takeWhile isHexDigit) out of
+    Just h | length h == 64 -> pure h
+    _ -> failWith ("could not compute the sha256 of the files in " ++ dir ++ " (sha256sum or shasum is needed)")
 
 -- | The commit a git dependency is at: its rev (a branch, a tag, or a
 -- commit), or HEAD; and the version of the package there.
@@ -252,17 +302,41 @@ tagVersion r =
   in  if not (null v) && isDigit (head v) && all (\c -> isDigit c || c == '.') v then Just v else Nothing
 
 -- | A checkout of a git dependency at a commit, in $MISO_HOME/src (cloned
--- once; miso install builds it there).
+-- once; miso install builds it there).  One that is there but not at the
+-- commit (left by an older miso, cut short or moved by hand) is cloned
+-- again, rather than built at the wrong commit.
 gitCheckout :: String -> String -> String -> IO FilePath
 gitCheckout n repo c = do
   home <- misoHome
   let dir = home ++ "/src/" ++ n ++ "-" ++ c
   cloned <- doesDirectoryExist dir
-  unless cloned $ do
-    step ("cloning " ++ repo)
-    run ("git clone --quiet " ++ quote repo ++ " " ++ quote dir)
-    run ("git -C " ++ quote dir ++ " checkout --quiet " ++ quote c)
+  ok <- if cloned then atCommit dir else pure False
+  unless ok $ do
+    when cloned $ do
+      warn (dir ++ " is not at " ++ c ++ ": cloning it again")
+      run ("rm -rf " ++ quote dir)
+    cloneAt repo (Just c) dir
+    at <- atCommit dir
+    unless at $ failWith ("the checkout of " ++ repo ++ " is not at " ++ c)
   pure dir
+  where
+    atCommit d = do
+      out <- readCommand ("git -C " ++ quote d ++ " rev-parse HEAD 2>/dev/null")
+      pure (maybe False (\h -> c `isPrefixOf` takeWhile isHexDigit h) out)
+
+-- | Clone a repository into dir, and check out a rev (a commit, tag or
+-- branch).  It is cloned next to dir and renamed when the checkout is done,
+-- so a clone or checkout that fails or is cut short leaves no dir behind
+-- (one would be taken as complete, at whatever commit it was).
+cloneAt :: String -> Maybe String -> FilePath -> IO ()
+cloneAt repo mrev dir = do
+  let tmp = dir ++ ".tmp"
+  createDirectoryIfMissing True (parent dir)
+  step ("cloning " ++ repo)
+  run ("rm -rf " ++ quote tmp)
+  run ("git clone --quiet " ++ quote repo ++ " " ++ quote tmp)
+  maybe (pure ()) (\r -> run ("git -C " ++ quote tmp ++ " checkout --quiet " ++ quote r)) mrev
+  run ("mv " ++ quote tmp ++ " " ++ quote dir)
 
 -- | The version of the package in a directory: its miso.yml's, or (with
 -- none) its .cabal file's.
@@ -311,7 +385,12 @@ expandCommit d repo short = do
   there <- doesDirectoryExist dir
   if there
     then run ("git -C " ++ quote dir ++ " fetch --quiet")
-    else run ("git clone --quiet --no-checkout " ++ quote repo ++ " " ++ quote dir)
+    else do
+      -- cloned next to it and renamed, so a clone cut short leaves nothing
+      let tmp = dir ++ ".tmp"
+      run ("rm -rf " ++ quote tmp)
+      run ("git clone --quiet --no-checkout " ++ quote repo ++ " " ++ quote tmp)
+      run ("mv " ++ quote tmp ++ " " ++ quote dir)
   out <- readCommand ("git -C " ++ quote dir ++ " rev-parse --verify --quiet " ++ quote (short ++ "^{commit}"))
   case fmap trim out of
     Just c | length c == 40 -> pure c

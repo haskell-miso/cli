@@ -7,15 +7,23 @@ module Miso.CLI.Build
   , libraryArgs
   , programArgs
   , nativeFiles
+  , libraryFiles
   , modulesIn
+  , emccTargets
+  , emsdk
+  , checkEmcc
   ) where
 
-import Control.Monad (filterM, forM, unless, when)
-import Data.List (intercalate, sort)
+import Control.Concurrent (threadDelay)
+import Control.Monad (filterM, forM, forM_, unless, when)
+import Data.Char (toLower)
+import Data.List (intercalate, isPrefixOf, isSuffixOf, sort)
 import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+import qualified System.Info as Info
 
 import Miso.CLI.Color
 import Miso.CLI.Config
+import Miso.CLI.Progress
 import Miso.CLI.Util
 import MicroHs.Compile (mhsVersion)
 
@@ -28,11 +36,21 @@ nativeFiles cfg exe = do
   let lib = fmap libNative (cfgLibrary cfg)
       own = exeNative exe
       dflt = maybe True (const False) lib     -- the program has the defaults
-  (lc, lj, li) <- maybe (pure ([], [], [])) (files True) lib
-  (oc, oj, oi) <- files dflt own
+  (lc, lj, li) <- maybe (pure ([], [], [])) (nativeFilesOf True) lib
+  (oc, oj, oi) <- nativeFilesOf dflt own
   pure (lc ++ oc, lj ++ oj, li ++ oi)
+
+-- | The C, JavaScript and include files of the library (with the defaults
+-- cbits/*.c, jsbits/*.js and include/, where they are there).
+libraryFiles :: Library -> IO ([FilePath], [FilePath], [FilePath])
+libraryFiles lib = nativeFilesOf True (libNative lib)
+
+-- | The C and JavaScript files and include dirs of one component; with dflt,
+-- the defaults apply to what miso.yml does not list.
+nativeFilesOf :: Bool -> Native -> IO ([FilePath], [FilePath], [FilePath])
+nativeFilesOf dflt n = files
   where
-    files dflt n = do
+    files = do
       c <- globs (pick dflt ["cbits/*.c"] (cSources n))
       j <- globs (pick dflt ["jsbits/*.js"] (jsSources n))
       i <- existing (pick dflt ["include"] (includeDirs n))
@@ -126,6 +144,8 @@ programArgs devBuild cfg exe out = do
       -- browser_rts: the runtime of miso dev's builds (devComb)
       browser = maybe False (`elem` ["browser", "browser_rts"]) (exeTarget exe)
       check = maybe True (const False) out
+      -- the native linker is GNU ld on Linux (macOS's ld64 needs no help)
+      gnuLd = map toLower Info.os == "linux"
   pure $ [ "-i" ++ d | d <- programDirs cfg exe ]
       ++ [ "-I" ++ d | d <- incs ] ++ concatMap cppOptions natives
       ++ (if isNat || check then [] else maybe [] (\t -> ["-t" ++ t]) (exeTarget exe))
@@ -136,6 +156,10 @@ programArgs devBuild cfg exe out = do
             ++ [ j | not isNat, j <- js ]
             ++ concat [ ["-optc", o] | n <- natives, o <- ccOptions n ]
             ++ concat [ ["-optl", o] | n <- natives, o <- ldOptions n ]
+            -- mhs puts these before the program's C file, and GNU ld (with
+            -- --as-needed, the default on Ubuntu and Debian) drops a library
+            -- that nothing before it needs: so on Linux, link them anyway
+            ++ [ o | isNat, gnuLd, any (not . null . extraLibraries) natives, o <- ["-optl", "-Wl,--no-as-needed"] ]
             ++ concat [ ["-optl", "-l" ++ l] | n <- natives, l <- extraLibraries n ]
             -- the instructions for exceptions (and longjmp) that browsers
             -- keep; emcc still makes the old, deprecated try by default
@@ -144,6 +168,43 @@ programArgs devBuild cfg exe out = do
             ++ (if devBuild then ["-v"] else [])
             ++ maybe [] (\o -> ["-o" ++ o]) out)
       ++ [exeMain exe]
+
+-- | The mhs targets that compile with emcc (see mhs.conf).
+emccTargets :: [String]
+emccTargets = ["browser", "browser_js", "browser_rts", "emscripten", "emscripten_js", "emscripten_web"]
+
+emsdk :: String
+emsdk = "https://emscripten.org/docs/getting_started/downloads.html"
+
+-- | Stop before building programs whose target compiles with emcc, when
+-- emcc is not installed: mhs would get as far as running it, and fail with
+-- its whole command line.  The commands check first, before installing
+-- the dependencies.  A dev build of a browser program needs emcc only for
+-- a runtime it has not built before (devComb): with one built already it
+-- goes ahead, and devComb stops if it needs another.
+checkEmcc :: Bool -> [Executable] -> IO ()
+checkEmcc devBuild exes = do
+  loader <- rtsLoader
+  cached <- builtRuntimes
+  forM_ exes $ \exe ->
+    unless (devBuild && exeTarget exe == Just "browser" && loader /= Nothing && cached) (needEmcc exe)
+
+-- | Whether $MISO_HOME/rts has a runtime that devComb built for this mhs.
+builtRuntimes :: IO Bool
+builtRuntimes = do
+  dir <- (++ "/rts") <$> misoHome
+  there <- doesDirectoryExist dir
+  if not there then pure False else
+    any (\f -> ("rts-" ++ mhsVersion ++ "-") `isPrefixOf` f && ".js" `isSuffixOf` f) <$> listDirectory dir
+
+-- | Stop when the program's target compiles with emcc and emcc is not installed.
+needEmcc :: Executable -> IO ()
+needEmcc exe = case exeTarget exe of
+  Just t | t `elem` emccTargets -> do
+    ok <- have "emcc"
+    unless ok $ failWith (exeName exe ++ " has target: " ++ t ++ ", which needs emcc (emscripten), and it is not installed: "
+                          ++ emsdk ++ " (miso doctor checks the tools)")
+  _ -> pure ()
 
 -- | Build a program, and return the output file.  A browser program is
 -- public/index.js, next to a copy of its static dir, or with several
@@ -159,16 +220,38 @@ buildProgram devBuild cfg exe = do
   when (exeStaticDir exe /= "static" && not static) $
     failWith ("miso.yml: static-dir " ++ exeStaticDir exe ++ " does not exist")
   when (static && not nat) $ run ("cp -R " ++ quote (exeStaticDir exe) ++ "/. " ++ quote web ++ "/")
-  info ("Building " ++ cfgName cfg ++ " " ++ cfgVersion cfg ++ (if exeName exe == cfgName cfg then "" else " (" ++ exeName exe ++ ")"))
+  let what = "Building " ++ cfgName cfg ++ " " ++ cfgVersion cfg ++ (if exeName exe == cfgName cfg then "" else " (" ++ exeName exe ++ ")")
   loader <- rtsLoader
-  case loader of
-    Just js | devBuild && exeTarget exe == Just "browser" -> devComb cfg exe web js
+  took <- case loader of
+    Just js | devBuild && exeTarget exe == Just "browser" -> info what >> devComb cfg exe web js >> pure Nothing
     _ -> do
-      runSelf ("mhs " ++ unwords (map quote args))
+      took <- runMhs what args
       -- a dev build's program, which this index.js does not read
       unless nat $ run ("rm -f " ++ quote (web ++ "/app.comb"))
-  success ("Built " ++ outFile)
+      pure took
+  success ("Built " ++ outFile ++ maybe "" (" in " ++) took)
   pure outFile
+
+-- | Run mhs.  On a terminal its output goes to the build log, and the
+-- build is shown as it runs (Miso.CLI.Progress), then what mhs said
+-- (warnings, errors); how long it took.  Otherwise mhs prints as it goes (miso dev
+-- shows the log of miso build --dev this way).
+runMhs :: String -> [String] -> IO (Maybe String)
+runMhs what args = do
+  tty <- isTerminal
+  if not tty
+    then do
+      info what
+      runSelf ("mhs " ++ unwords (map quote args))
+      pure Nothing
+    else do
+      me <- self
+      (r, took) <- logged (threadDelay 100000) what buildLog
+                     (quote me ++ " mhs " ++ unwords (map quote ("-v" : filter (/= "-v") args)))
+      -- its warnings, or why it failed
+      showLog buildLog
+      when (r /= 0) $ failWith ("the build failed (" ++ took ++ ")")
+      pure (Just took)
 
 -- | The loader of the browser runtime (target browser_rts), if the
 -- installed MicroHs has it.
@@ -213,6 +296,7 @@ devComb cfg exe web loader = do
   let rts = dir ++ "/rts-" ++ mhsVersion ++ "-" ++ key ++ ".js"
   have <- doesFileExist rts
   unless have $ do
+    needEmcc exe
     step "building the runtime with emcc (once, for these foreign imports and C and JavaScript files)"
     runSelf ("mhs " ++ unwords (map quote [ if a == out then "-o" ++ rts ++ ".tmp" else a | a <- rtsArgs ]))
     run ("mv -f " ++ quote (rts ++ ".tmp") ++ " " ++ quote rts)

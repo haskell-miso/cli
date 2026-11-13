@@ -1,14 +1,16 @@
 -- | miso doctor: check what miso needs, and say how to fix what is missing.
 module Miso.CLI.Doctor (doctor) where
 
-import Control.Monad (forM_, when)
+import Control.Monad (filterM, forM_, when)
 import Data.IORef
-import Data.List (isPrefixOf)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+import Data.List (isPrefixOf, nub)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeFile)
+import System.IO (hClose, hFlush, hPutStrLn, openTempFile, stdout)
 
 
 import MicroHs.Compile (mhsVersion)
 
+import Miso.CLI.Build (emccTargets, emsdk)
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Util
@@ -36,13 +38,25 @@ doctor = do
   pkgs <- if dbOk then listDirectory (db ++ "/packages") else pure []
   let hasPkg p = any ((p ++ "-") `isPrefixOf`) pkgs
   check (hasPkg "base") "base" "the package database is damaged; reinstall: miso upgrade"
-  check (hasPkg "miso") "miso" "the package database is damaged; reinstall: miso upgrade"
+  -- miso: prebuilt next to the packages (miso-prebuilt), or among them (a
+  -- release from before projects depended on miso)
+  hasDefault <- doesFileExist (db ++ "/miso-default")
+  prebuilt <- if hasDefault then doesDirectoryExist (db ++ "/miso-prebuilt/packages") else pure False
+  check (prebuilt || hasPkg "miso") "miso" "the package database is damaged; reinstall: miso upgrade"
   cpphs <- doesFileExist (parent exe ++ "/cpphs" ++ exeSuffix)
   check cpphs "cpphs (for modules with CPP)" ("missing next to " ++ exe ++ "; reinstall: miso upgrade")
   mhome <- misoHome
   createDirectoryIfMissing True mhome
   writable <- tryRun ("test -w " ++ quote mhome ++ " && test -w " ++ quote home)
-  check writable ("writable: " ++ mhome) ("miso installs packages there; fix its permissions")
+  check writable ("writable: " ++ mhome) ("miso keeps downloads and built packages there; fix its permissions")
+  -- packages installed where every project shared them, before each had its own .miso/
+  olds <- filterM (\d -> (\fs -> any (".pkg" `isSuffixOf'`) fs) <$> listDirectory (mhome ++ "/mcabal/" ++ d ++ "/packages"))
+            =<< (do e <- doesDirectoryExist (mhome ++ "/mcabal")
+                    if e then filterM (\d -> doesDirectoryExist (mhome ++ "/mcabal/" ++ d ++ "/packages"))
+                                 . filter ("mhs-" `isPrefixOf`) =<< listDirectory (mhome ++ "/mcabal")
+                         else pure [])
+  forM_ olds $ \d ->
+    note (mhome ++ "/mcabal/" ++ d ++ " has packages from before each project had its own .miso/; miso no longer uses them (rm -rf it)")
 
   info "Tools"
   let cc = if windows then "gcc" else "cc"
@@ -60,6 +74,13 @@ doctor = do
   if hasHlint then ok "hlint (for miso lint)" else note "hlint is not installed (needed for miso lint)"
   hasGit <- have "git"
   if hasGit then ok "git (for git dependencies)" else note "git is not installed (needed for git dependencies)"
+  hasEmcc <- have "emcc"
+  if hasEmcc then ok "emcc (for the browser targets)" else note ("emcc is not installed (needed for the browser targets): " ++ emsdk)
+  runtime <- if hasEmcc then jsRuntime else pure (Left "")
+  when hasEmcc $ case runtime of
+    Right js -> ok ("JS runtime for emcc: " ++ js)
+    Left js -> note ("emcc has no working JS runtime" ++ (if null js then "" else " (" ++ js ++ ")")
+                     ++ ", and it runs one on every build: " ++ jsRuntimeFix)
   when windows $ do
     hasSh <- have "sh"
     check hasSh "sh (MSYS2)" "run miso in an MSYS2 shell"
@@ -80,17 +101,58 @@ doctor = do
           ok ("test " ++ exeName t ++ " (" ++ exeMain t ++ " in " ++ unwords (exeSourceDirs t) ++ ")")
         dirs <- mapM doesDirectoryExist (allSourceDirs cfg)
         check (and dirs) ("source dirs: " ++ unwords (allSourceDirs cfg)) "a source dir of miso.yml does not exist"
-        let browser = any (maybe False (`elem` ["browser", "browser_js"]) . exeTarget) (cfgExecutables cfg)
-        when browser $ do
-          hasEmcc <- have "emcc"
-          check hasEmcc "emcc (target: browser)" "install emscripten: https://emscripten.org/docs/getting_started/downloads.html"
+        forM_ (nub [ t | Just t <- map exeTarget (cfgExecutables cfg), t `elem` emccTargets ]) $ \t ->
+          check hasEmcc ("emcc (target: " ++ t ++ ")") ("install emscripten: " ++ emsdk)
+        when (hasEmcc && any ((`elem` map Just emccTargets) . exeTarget) (cfgExecutables cfg)) $
+          check (either (const False) (const True) runtime) "JS runtime for emcc (browser targets)" jsRuntimeFix
+        mdb <- pkgDir
+        case mdb of
+          Just pd -> do
+            has <- doesDirectoryExist (pd ++ "/packages")
+            n <- if has then length . filter (".pkg" `isSuffixOf'`) <$> listDirectory (pd ++ "/packages") else pure 0
+            ok (".miso/: " ++ show n ++ " package" ++ (if n == 1 then "" else "s") ++ " installed (miso list shows them)")
+          Nothing -> pure ()
         locals <- mapM (\d -> maybe (pure True) doesDirectoryExist (depPath d)) (allDeps cfg)
         check (and locals) "local dependencies" "a path: dependency of miso.yml does not exist"
         when (any ((/= Nothing) . depGit) (allDeps cfg)) $
           check hasGit "git (git dependencies)" "install git"
 
   n <- readIORef problems
+  hFlush stdout   -- the checks before the error, when stdout is not a terminal
   if n == 0
     then success "Everything is fine"
     else do
       failWith (show n ++ " problem" ++ (if n == 1 then "" else "s") ++ " found")
+
+-- | The JS runtime emcc runs (its JS compiler, at every -O), and whether it
+-- works.  em-config says which: EM_NODE_JS, or NODE_JS of the emscripten
+-- config, where emsdk and nix put their node (it need not be on the PATH).
+-- It need not be node either (bun works), so a smoke test says whether it
+-- runs a module with WebAssembly, rather than its --version.
+jsRuntime :: IO (Either String String)
+jsRuntime = do
+  r <- readCommand "em-config NODE_JS 2>/dev/null"
+  case maybe [] pyStrings r of
+    [] -> pure (Left "em-config NODE_JS says none")
+    cmd -> do
+      tmp <- getTemporaryDirectory
+      (f, h) <- openTempFile tmp "miso-smoke.mjs"
+      hPutStrLn h "console.log(typeof WebAssembly.instantiate)"
+      hClose h
+      out <- readCommand (unwords (map quote cmd) ++ " " ++ quote f ++ " 2>/dev/null")
+      removeFile f
+      let js = unwords cmd
+      pure (if fmap lines out == Just ["function"] then Right js else Left (js ++ " does not run"))
+
+-- | NODE_JS as em-config prints it: a Python list (['/usr/bin/node']), or a
+-- string in older emscriptens.
+pyStrings :: String -> [String]
+pyStrings s = case dropWhile (== ' ') s of
+  '[' : r -> go r
+  r -> words r
+  where go r = case dropWhile (/= '\'') r of
+                 '\'' : t -> let (a, b) = break (== '\'') t in a : go (drop 1 b)
+                 _ -> []
+
+jsRuntimeFix :: String
+jsRuntimeFix = "install node, or point emscripten at another runtime: export EM_NODE_JS=$(command -v bun)"

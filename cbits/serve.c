@@ -3,7 +3,10 @@
  *
  * Single threaded: miso calls miso_serve_poll, which handles what is ready
  * (with select) and returns, so the caller can watch the sources between
- * polls.  In dev mode HTML pages get a script (in <head>, before the app
+ * polls.  A connection is read only once its request has arrived: browsers
+ * open connections ahead of time (preconnect) and may send nothing on them
+ * for seconds, and reading one of those at once would stop the server, and
+ * miso dev's rebuilds, until the browser gave up on it.  In dev mode HTML pages get a script (in <head>, before the app
  * runs) that polls /__miso/version, a number that miso_serve_reload
  * increases, and reloads the page when it changes.  Polling, unlike a held
  * connection, also reaches a page opened during a build, or one whose
@@ -13,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include "serve.h"
@@ -36,6 +40,14 @@ typedef int sock_t;
 #endif
 
 static sock_t listener = BAD_SOCK;
+
+/* Accepted connections whose request has not arrived yet, and when each
+ * was accepted: one that stays silent for IDLE_SECONDS is closed. */
+#define MAX_PENDING 64
+#define IDLE_SECONDS 30
+static sock_t pending[MAX_PENDING];
+static time_t pending_since[MAX_PENDING];
+static int npending;
 static char root[1024];
 static int dev_mode;
 static long build_version;
@@ -90,6 +102,7 @@ static char *read_file(const char *path, size_t *len) {
   fseek(f, 0, SEEK_END);
   n = ftell(f);
   fseek(f, 0, SEEK_SET);
+  if (n < 0) { fclose(f); return NULL; }   /* not a regular file */
   buf = malloc((size_t)n + sizeof reload_script + 1);
   if (buf && fread(buf, 1, (size_t)n, f) != (size_t)n) { free(buf); buf = NULL; }
   fclose(f);
@@ -194,22 +207,50 @@ int miso_serve_start(const char *dir, int port, int dev) {
   return 0;
 }
 
-/* Handle the requests that come within ms milliseconds. */
+static void drop_pending(int i) {
+  pending[i] = pending[--npending];
+  pending_since[i] = pending_since[npending];
+}
+
+/* Handle the requests that come within ms milliseconds: accept new
+ * connections, and answer those whose request has arrived. */
 void miso_serve_poll(int ms) {
   fd_set fds;
   struct timeval tv;
+  int i, first = 1;
   if (listener == BAD_SOCK) return;
-  FD_ZERO(&fds);
-  FD_SET(listener, &fds);
-  tv.tv_sec = ms / 1000;
-  tv.tv_usec = (ms % 1000) * 1000;
-  while (select((int)listener + 1, &fds, NULL, NULL, &tv) > 0) {
-    sock_t s = accept(listener, NULL, NULL);
-    if (s != BAD_SOCK) handle(s);
+  for (;;) {
+    sock_t top = listener;
+    time_t now = time(NULL);
+    /* close the connections that never sent a request */
+    for (i = npending - 1; i >= 0; i--)
+      if (now - pending_since[i] > IDLE_SECONDS) { CLOSE(pending[i]); drop_pending(i); }
     FD_ZERO(&fds);
     FD_SET(listener, &fds);
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
+    for (i = 0; i < npending; i++) {
+      FD_SET(pending[i], &fds);
+      if (pending[i] > top) top = pending[i];
+    }
+    /* wait ms the first time; then take what is ready, without waiting */
+    tv.tv_sec = first ? ms / 1000 : 0;
+    tv.tv_usec = first ? (ms % 1000) * 1000 : 0;
+    first = 0;
+    if (select((int)top + 1, &fds, NULL, NULL, &tv) <= 0) return;
+    for (i = npending - 1; i >= 0; i--)
+      if (FD_ISSET(pending[i], &fds)) {
+        sock_t s = pending[i];
+        drop_pending(i);
+        handle(s);
+      }
+    if (FD_ISSET(listener, &fds)) {
+      sock_t s = accept(listener, NULL, NULL);
+      if (s != BAD_SOCK) {
+        if (npending == MAX_PENDING) { CLOSE(pending[0]); drop_pending(0); }
+        pending[npending] = s;
+        pending_since[npending] = time(NULL);
+        npending++;
+      }
+    }
   }
 }
 

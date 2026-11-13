@@ -58,6 +58,33 @@ jobs:
       - name: miso docs
         run: scripts/docs-test.sh dist/miso-x86_64-linux.tar.gz
 
+  # Every template built for the browser with emcc, as a new user would:
+  # the smoke test builds native programs only (scripts/template-test.sh).
+  # emcc comes from the nixpkgs miso is built with (flake.lock), so this
+  # builds with the emscripten miso is tested against.
+  templates:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { system: x86_64-linux,   runner: ubuntu-latest }
+          - { system: aarch64-darwin, runner: macos-latest }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: actions/download-artifact@v5
+        with:
+          name: miso-${{ matrix.system }}
+          path: dist
+      - name: Build the templates for the browser
+        run: |
+          rev=$(jq -r '.nodes[.nodes.miso.inputs.nixpkgs].locked.rev' flake.lock)
+          echo "emscripten from nixpkgs $rev"
+          nix shell "github:NixOS/nixpkgs/$rev#emscripten" \
+            --command scripts/template-test.sh dist/miso-${{ matrix.system }}.tar.gz
+
   build-intel-mac:
     # GitHub retired the macos-13 image (jobs wait for it forever);
     # macos-15-intel is the free Intel runner.
@@ -105,7 +132,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, build-intel-mac, build-windows]
+    needs: [build, templates, build-intel-mac, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -117,3 +144,26 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+      # Pin the release for nix (the flake's #release package): its tarballs
+      # and their sha256, in nix/release.json on main.  The tarballs are the
+      # ones above; nothing is built again.
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          path: repo
+      - name: Pin the release in nix/release.json
+        run: |
+          tag=$GITHUB_REF_NAME
+          assets='{}'
+          for s in x86_64-linux aarch64-linux aarch64-darwin x86_64-darwin; do
+            h=$(cut -d' ' -f1 "dist/miso-$s.tar.gz.sha256")
+            u=https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/miso-$s.tar.gz
+            assets=$(jq --arg s "$s" --arg u "$u" --arg h "$h" '. + {($s): {url: $u, sha256: $h}}' <<< "$assets")
+          done
+          jq -n --arg v "$tag" --argjson a "$assets" '{version: $v, assets: $a}' > repo/nix/release.json
+          cd repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add nix/release.json
+          git commit -m "nix/release.json: $tag"
+          git push origin HEAD:main

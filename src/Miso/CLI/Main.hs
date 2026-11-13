@@ -4,11 +4,12 @@
 -- (miso mcabal ...) are linked in, and the project commands use them.
 module Miso.CLI.Main (main) where
 
-import Control.Exception (AsyncException (..), catch, throwIO)
+import Control.Exception (AsyncException (..), ErrorCall (..), catch, throwIO)
 import Control.Monad (filterM, forM, forM_, unless, when)
-import Data.List (intercalate)
+import Data.Char (isAlpha, isAlphaNum, isDigit)
+import Data.List (intercalate, isInfixOf, isPrefixOf)
 import Foreign.C.Types (CInt (..))
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, getHomeDirectory, getTemporaryDirectory, listDirectory, removeFile)
 import System.Environment (getArgs, lookupEnv, withArgs)
 import System.Exit (ExitCode (..), exitWith)
 import System.IO (hFlush, stderr, stdout)
@@ -19,13 +20,14 @@ import qualified MicroHs.Main as MHS
 import MicroHs.Compile (mhsVersion)
 
 import Miso.CLI.Build
+import Miso.CLI.Cabalize (cabalFile)
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Deps
 import Miso.CLI.Docs (docs)
 import Miso.CLI.Doctor (doctor)
 import Miso.CLI.Serve (dev, serve, watch)
-import Miso.CLI.Templates (templateNames, templates)
+import Miso.CLI.Templates (licenseText, templateNames, templates)
 import Miso.CLI.Util
 
 -- Exit with the code of an ExitCode exception (from mhs, mcabal, or us);
@@ -35,7 +37,7 @@ foreign import ccall "exit" c_exit :: CInt -> IO ()
 foreign import ccall "serve.h miso_line_buffered" c_lineBuffered :: IO ()
 
 main :: IO ()
-main = (main' `catch` \e -> do
+main = ((main' `catch` explainError) `catch` \e -> do
   hFlush stdout
   hFlush stderr
   c_exit (case e of { ExitSuccess -> 0; ExitFailure n -> fromIntegral n }))
@@ -44,17 +46,40 @@ main = (main' `catch` \e -> do
     UserInterrupt -> putStrLn "" >> hFlush stdout >> c_exit 130
     _ -> throwIO e
 
+-- | An error from the code miso runs in its own process (mcabal's, and
+-- System.Process's callCommand) said as miso says its own: "error: ...",
+-- without the Haskell exception and source location around it.
+explainError :: ErrorCall -> IO ()
+explainError (ErrorCallWithLocation msg loc) = failWith (explain msg)
+  where
+    explain m = case splitCmd m of
+      Just cmd -> case words cmd of
+        "curl" : ws@(_ : _) -> "could not download " ++ last ws ++ " (check the network connection, or the proxy)"
+        "git" : _ -> "a git command failed (check the network connection, and the repository): " ++ cmd
+        _ -> "command failed: " ++ cmd
+      -- anything else is a bug: keep where it came from
+      Nothing -> loc ++ m
+    -- callCommand's message: "callCommand: failed N, cmd=\n" ++ show cmd
+    splitCmd m
+      | "callCommand: failed " `isPrefixOf` m
+      , (_, rest) <- break (== '=') m
+      , [(cmd, _)] <- reads (dropWhile (`elem` "=\n") rest) = Just cmd
+      | otherwise = Nothing
+
 main' :: IO ()
 main' = do
   args <- getArgs
   case args of
     "mhs" : as         -> runMhs as
     "mcabal" : as      -> runMcabal as
+    c : as | wantsHelp c as -> commandUsage c
     ["new", name]      -> new "counter" name
     ["new", name, "--template", t] -> new t name
     ["new", "--template", t, name] -> new t name
     "new" : _          -> failWith "usage: miso new NAME [--template T] (miso templates lists the templates)"
+    "init" : as        -> initProject as
     ["templates"]      -> listTemplates
+    ["cabal"]          -> withConfig (\cfg -> cabalFile cfg >>= putStr)
     "build" : as       -> withConfig (build ("--dev" `elem` as) (filter (/= "--dev") as))
     "run" : as         -> withConfig (runProgram as)
     "test" : as        -> withConfig (test as)
@@ -72,7 +97,9 @@ main' = do
     ["list"]           -> listPackages
     ["lock"]           -> withConfig lockDeps
     ["update"]         -> withConfig updateDeps
+    ["vendor"]         -> withConfig vendorDeps
     ["doctor"]         -> doctor
+    "uninstall" : as   -> uninstall as
     ["upgrade"]        -> upgrade Nothing
     ["upgrade", v]     -> upgrade (Just v)
     ["version"]        -> printVersion
@@ -82,53 +109,80 @@ main' = do
     []                 -> usage
     _                  -> usage >> failWith ("unknown command: miso " ++ unwords args)
 
+-- | The commands, in the sections of miso help: the command as typed,
+-- and what it does.
+commands :: [(String, [(String, String)])]
+commands =
+  [ ("Project",
+    [ ("new NAME [--template T]", "make a new project (miso templates lists them)")
+    , ("init", "make this directory a project (asks for its name, license, ...)")
+    , ("build [NAME...]", "build the project of miso.yml (or the programs named)")
+    , ("run [NAME] [ARGS]", "build and run a program (target: native)")
+    , ("test [NAME...] [-- ARGS]", "build and run the tests (or those named)")
+    , ("dev [NAME] [--port N]", "serve a program, rebuild on changes, and reload the page")
+    , ("serve [--port N]", "serve public/")
+    , ("watch [NAME]", "type check on every change, and show the first error")
+    , ("lint [ARGS]", "run hlint on the project's sources (.hlint.yaml configures it)")
+    , ("repl", "mhs, interactively, with the project's sources")
+    , ("docs [--out DIR]", "a documentation site for the library, in docs/")
+    , ("clean", "remove what builds make (dist/, public/, .miso/, caches)")
+    , ("templates", "list the templates of miso new")
+    ])
+  , ("Dependencies",
+    [ ("install", "install the dependencies of miso.yml (in .miso/)")
+    , ("add PKG...", "add dependencies to miso.yml, and install them")
+    , ("remove PKG...", "remove dependencies from miso.yml")
+    , ("list", "list the packages: the tool's, and the project's")
+    , ("lock", "write miso.lock, keeping the versions locked already")
+    , ("update", "lock Hackage and git dependencies in miso.lock, and install them")
+    , ("vendor", "copy the locked dependencies' sources to vendor/, to build from")
+    , ("cabal", "print the .cabal file of the library (other projects build it from that)")
+    ])
+  , ("The tool",
+    [ ("doctor", "check the installation and the tools miso needs")
+    , ("upgrade [VERSION]", "install the latest release (or VERSION)")
+    , ("uninstall [--yes]", "remove miso, its packages and caches (asks first)")
+    , ("version", "show the version")
+    , ("mhs ARGS", "run the MicroHs compiler")
+    , ("mcabal ARGS", "run MicroCabal")
+    ])
+  ]
+
+-- | Whether miso CMD ARGS asks for CMD's help (--help or -h) rather than
+-- running it.  run and test give their programs the arguments after a
+-- name or --, so there only the first one counts.
+wantsHelp :: String -> [String] -> Bool
+wantsHelp c as = c `elem` map (head . words . fst) (concatMap snd commands) && any isHelp asked
+  where
+    asked | c `elem` ["run", "test"] = take 1 as
+          | otherwise = takeWhile (/= "--") as
+    isHelp a = a `elem` ["--help", "-h"]
+
+-- | miso CMD --help: the usage of CMD.
+commandUsage :: String -> IO ()
+commandUsage c = do
+  hdr <- colored 1 [Bold] "Usage:"
+  forM_ [ (u, what) | (_, cs) <- commands, (u, what) <- cs, head (words u) == c ] $ \(u, what) ->
+    putStrLn (hdr ++ " miso " ++ u ++ "\n\n  " ++ what)
+
 usage :: IO ()
 usage = do
   b <- colored 1 [Bold, Magenta] "miso"
   hdr <- colored 1 [Bold] "Usage:"
-  let section t = colored 1 [Bold] t
-      -- a command in cyan, padded to line up its description
-      cmd c what = do
+  -- a command in cyan, padded to line up its description
+  let cmd (c, what) = do
         c' <- colored 1 [Cyan] c
         pure ("  " ++ c' ++ replicate (25 - length c) ' ' ++ what)
-  proj <- section "Project"
-  deps <- section "Dependencies"
-  tool <- section "The tool"
-  ls <- sequence
-    [ cmd "new NAME [--template T]" "make a new project (miso templates lists them)"
-    , cmd "build [NAME...]" "build the project of miso.yml (or the programs named)"
-    , cmd "run [NAME] [ARGS]" "build and run a program (target: native)"
-    , cmd "test [NAME...] [-- ARGS]" "build and run the tests (or those named)"
-    , cmd "dev [NAME] [--port N]" "serve a program, rebuild on changes, and reload the page"
-    , cmd "serve [--port N]" "serve public/"
-    , cmd "watch [NAME]" "type check on every change, and show the first error"
-    , cmd "lint [ARGS]" "run hlint on the project's sources (.hlint.yaml configures it)"
-    , cmd "repl" "mhs, interactively, with the project's sources"
-    , cmd "docs [--out DIR]" "a documentation site for the library, in docs/"
-    , cmd "clean" "remove what builds make (dist/, public/, caches)"
-    ]
-  ds <- sequence
-    [ cmd "install" "install the dependencies of miso.yml"
-    , cmd "add PKG..." "add dependencies to miso.yml, and install them"
-    , cmd "remove PKG..." "remove dependencies from miso.yml"
-    , cmd "list" "list the installed packages"
-    , cmd "lock" "write miso.lock, keeping the versions locked already"
-    , cmd "update" "lock Hackage and git dependencies in miso.lock, and install them"
-    ]
-  ts <- sequence
-    [ cmd "doctor" "check the installation and the tools miso needs"
-    , cmd "upgrade [VERSION]" "install the latest release (or VERSION)"
-    , cmd "version" "show the version"
-    , cmd "mhs ARGS" "run the MicroHs compiler"
-    , cmd "mcabal ARGS" "run MicroCabal"
-    ]
+  sections <- forM commands $ \(title, cs) -> do
+    t <- colored 1 [Bold] title
+    ls <- mapM cmd cs
+    pure (t : ls)
   foot <- colored 1 [Dim] "miso keeps its files in $MISO_HOME (default ~/.miso).  NO_COLOR=1 turns off colors."
   putStrLn $ unlines $
     [ b ++ " " ++ version ++ " - build miso apps with MicroHs " ++ mhsVersion
     , ""
     , hdr ++ " miso COMMAND"
-    , ""
-    , proj ] ++ ls ++ [ "", deps ] ++ ds ++ [ "", tool ] ++ ts ++ [ "", foot ]
+    , "" ] ++ intercalate [""] sections ++ [ "", foot ]
 
 printVersion :: IO ()
 printVersion = putStrLn ("miso " ++ version ++ " (MicroHs " ++ mhsVersion ++ ")")
@@ -152,18 +206,15 @@ port as =
 -----------------------------------------------------------------------------
 -- The embedded tools
 
--- | mhs, also finding the packages in $MISO_HOME/mcabal.  (The packages of
--- the tool, and those miso install installs, are found next to the
--- executable.)  A bare -a clears the package path, so it is left alone.
+-- | mhs, finding the packages of the project (in its .miso/) and then the
+-- tool's (Miso.CLI.Util.packagePath).  Other -a arguments add to that (mcabal
+-- adds -a.); a bare -a clears the package path, so it is left alone.
 runMhs :: [String] -> IO ()
 runMhs as = do
   c_lineBuffered
   setupCpphs
-  pd <- pkgDir
-  createDirectoryIfMissing True pd
-  let as' | "-a" `elem` as || ("-a" ++ pd) `elem` as = as
-          | otherwise = ("-a" ++ pd) : as
-  withArgs as' MHS.main
+  path <- packagePath
+  withArgs (if "-a" `elem` as then as else path ++ as) MHS.main
 
 runMcabal :: [String] -> IO ()
 runMcabal as = setupEnv >> withArgs as MCabal.main
@@ -177,9 +228,11 @@ runMcabal as = setupEnv >> withArgs as MCabal.main
 build :: Bool -> [String] -> Config -> IO ()
 build devBuild names cfg = do
   exes <- mapM (either failWith pure . findProgram cfg) names
+  let programs = if null names then cfgExecutables cfg else exes
+  checkEmcc devBuild programs
   installDeps cfg
   when (null names) $ maybe (pure ()) (checkLibrary cfg) (cfgLibrary cfg)
-  forM_ (if null names then cfgExecutables cfg else exes) (buildProgram devBuild cfg)
+  forM_ programs (buildProgram devBuild cfg)
 
 -- | miso run [NAME] [--] [ARGS]: build a native program (the one named, or
 -- the first) and run it.
@@ -208,6 +261,7 @@ test as cfg = do
   when (null (cfgTests cfg)) $
     failWith "miso.yml has no tests (a tests: section, like executables:, of programs that exit with 0 when they pass)"
   ts <- if null names then pure (cfgTests cfg) else mapM (either failWith pure . findTest cfg) names
+  checkEmcc False ts
   installDeps cfg
   outs <- mapM (buildProgram False cfg) ts
   results <- forM (zip ts outs) $ \(t, out) -> do
@@ -223,18 +277,40 @@ test as cfg = do
     then success (count (length results) ++ " passed")
     else failWith (show (length failed) ++ " of " ++ count (length results) ++ " failed: " ++ intercalate ", " failed)
 
+-- | Remove what builds made in the project here.  Only in a project (a
+-- folder with miso.yml): elsewhere public/, dist/ and .miso/ are someone
+-- else's (another kind of project, a static site, or, in the home folder,
+-- ~/.miso, the miso installation).  Not .miso/ either when it is
+-- $MISO_HOME or where the tool is installed, as with a project in ~.
 clean :: IO ()
 clean = do
-  let dirs = ["dist", "public", ".mhscache", "dist-mcabal", ".miso-build.log"]
+  isProject <- doesFileExist configFile
+  unless isProject $
+    failWith ("no " ++ configFile ++ " here: miso clean removes what miso built in a project (dist/, public/, .miso/), so it runs in the project's folder")
+  home <- misoHome
+  tool <- toolHome
+  let dirs = ["dist", "public", ".mhscache", "dist-mcabal", ".miso-build.log", ".miso"]
   there <- filterM' (\p -> (||) <$> doesDirectoryExist p <*> doesFileExist p) dirs
-  if null there
+  ours <- filterM' (\p -> if p /= ".miso" then pure True else not <$> anyM (sameDir p) [home, tool]) there
+  forM_ [ p | p <- there, p `notElem` ours ] $ \p ->
+    step ("not " ++ p ++ ": it is where miso is installed ($MISO_HOME)")
+  if null ours
     then step "nothing to clean"
     else do
-      run ("rm -rf " ++ unwords (map quote there))
-      success ("Removed " ++ unwords there)
-  where filterM' p = fmap concat . mapM (\x -> (\b -> [ x | b ]) <$> p x)
+      run ("rm -rf " ++ unwords (map quote ours))
+      success ("Removed " ++ unwords ours)
+  where
+    filterM' p = fmap concat . mapM (\x -> (\b -> [ x | b ]) <$> p x)
+    anyM p = fmap or . mapM p
+    -- the same directory, after symbolic links (pwd -P)
+    sameDir a b = do
+      ra <- readCommand ("cd " ++ quote a ++ " 2>/dev/null && pwd -P")
+      rb <- readCommand ("cd " ++ quote b ++ " 2>/dev/null && pwd -P")
+      pure (case (ra, rb) of { (Just x, Just y) -> x == y; _ -> False })
 
 -- | mhs, interactively, with the source dirs and options of miso.yml.
+-- Input that is not a terminal is read as lines, so a script can pipe
+-- expressions to it.
 repl :: IO ()
 repl = do
   isProject <- doesFileExist configFile
@@ -242,7 +318,9 @@ repl = do
             then withConfig $ \cfg -> pure ([ "-i" ++ d | d <- allSourceDirs cfg ] ++ cfgMhsOptions cfg ++ maybe [] libMhsOptions (cfgLibrary cfg))
             else pure []
   when isProject $ withConfig installDeps
-  runMhs (args ++ ["--interactive"])
+  -- mhs's line editor needs a terminal; from a pipe, plain lines (--stdin)
+  tty <- isInputTerminal
+  runMhs (args ++ ["--interactive"] ++ [ "--stdin" | not tty ])
 
 -- | Install a new release where this one is: run install.sh (the same
 -- download and checks as a first install) with MISO_HOME set to our
@@ -275,6 +353,112 @@ lint as cfg = do
   r <- runExitCode (unwords (map quote ("hlint" : dirs ++ as)))
   exitWith r
 
+-- | miso uninstall [--yes]: remove what miso put in $MISO_HOME (packages,
+-- caches, mcabal's files) and the tool itself where install.sh put it.  It
+-- shows what it removes and asks first (--yes does not ask; without a
+-- terminal --yes is needed).  Shell files that add miso to PATH are listed,
+-- not edited.
+--
+-- It removes only miso's own files and folders ('misoEntries'), never a
+-- folder as a whole: a folder that holds only those is removed with them,
+-- and one that holds anything else (miso installed as /usr/local/bin/miso,
+-- or MISO_HOME pointing at a shared folder) keeps everything else.  In a
+-- shared folder the caches' generic names (src/, store/, ...) are left too,
+-- as they may not be miso's.  Never the home directory or /, and not a tool
+-- in the nix store.
+uninstall :: [String] -> IO ()
+uninstall as = do
+  yes <- case as of
+    [] -> pure False
+    ["--yes"] -> pure True
+    _ -> failWith "usage: miso uninstall [--yes]"
+  home <- misoHome
+  tool <- toolHome
+  user <- getHomeDirectory
+  let inNix = "/nix/store/" `isPrefixOf` tool
+      dirs = home : [ tool | not inNix, tool /= home ]
+  there <- filterM doesDirectoryExist dirs
+  forM_ there $ \d ->
+    when (stripSlash d `elem` ["", stripSlash user]) $
+      failWith (d ++ " is your home directory (or /): not removing it; check MISO_HOME")
+  plans <- forM there $ \d -> misoEntries (d == home) d
+  let removals = concatMap snd plans
+  if null removals
+    then success ("Nothing to remove: no miso files in " ++ intercalate " or " dirs)
+    else do
+      info "miso uninstall removes:"
+      forM_ removals $ \p -> do
+        size <- maybe "" (takeWhile (`notElem` " \t")) <$> readCommand ("du -sh " ++ quote p ++ " 2>/dev/null")
+        step (p ++ (if null size then "" else " (" ++ size ++ ")"))
+      forM_ [ d | (d, (True, _)) <- zip there plans ] $ \d ->
+        step ("and " ++ d ++ " itself, if that leaves it empty")
+      forM_ [ d | (d, (False, _)) <- zip there plans ] $ \d ->
+        step (d ++ " has other files too: only miso's are removed")
+      when inNix $ step ("not " ++ tool ++ " (installed with nix: nix profile remove miso)")
+      tty <- isInputTerminal
+      go <- if yes then pure True
+            else if not tty then failWith "miso uninstall asks first; without a terminal, run miso uninstall --yes"
+            else do
+              putStr "Are you sure? This deletes everything listed above. [y/N] "
+              hFlush stdout
+              answer <- (Just <$> getLine) `catch` noAnswer
+              pure (maybe False (`elem` ["y", "Y", "yes", "Yes"]) answer)
+      unless go $ success "Nothing removed" >> exitWith ExitSuccess
+      -- Windows cannot remove a running miso.exe, but can move it away
+      when windows $ do
+        tmp <- getTemporaryDirectory
+        let exe = tool ++ "/bin/miso.exe"
+        running <- doesFileExist exe
+        when running $ () <$ tryRun ("mv -f " ++ quote exe ++ " " ++ quote (tmp ++ "/miso-uninstalled.exe"))
+      run ("rm -rf " ++ unwords (map quote removals))
+      -- the folders left empty: bin/, then the folder itself
+      forM_ there $ \d -> do
+        _ <- tryRun ("rmdir " ++ quote (d ++ "/bin") ++ " 2>/dev/null")
+        tryRun ("rmdir " ++ quote d ++ " 2>/dev/null")
+      success "Removed miso"
+  -- shell files that add it to PATH
+  let rcs = [ user ++ "/" ++ f | f <- [".zshrc", ".zprofile", ".bashrc", ".bash_profile", ".profile", ".config/fish/config.fish"] ]
+  found <- fmap concat $ forM rcs $ \f -> do
+    ok <- doesFileExist f
+    if not ok then pure [] else do
+      s <- readFile' f
+      pure [ f ++ ":" ++ show n ++ ": " ++ l | (n, l) <- zip [1 :: Int ..] (lines s), any (`isInfixOf` l) (".miso/bin" : [ d ++ "/bin" | d <- dirs ]) ]
+  unless (null found) $ do
+    info "These lines add miso to PATH; remove them yourself:"
+    mapM_ step found
+  where
+    stripSlash = reverse . dropWhile (== '/') . reverse
+    noAnswer :: IOError -> IO (Maybe String)
+    noAnswer _ = pure Nothing
+
+-- | What miso put in a folder: whether the folder holds nothing else (so
+-- it can go too), and the paths to remove.  The tool's files (bin/miso,
+-- bin/cpphs, mhs-*/) are miso's wherever they are.  The caches of
+-- $MISO_HOME (mcabal/, src/, store/, rts/) have generic names, so they are
+-- removed only from a folder that holds nothing but miso's files.
+misoEntries :: Bool -> FilePath -> IO (Bool, [FilePath])
+misoEntries isHome d = do
+  entries <- listDirectory d
+  binEntries <- do
+    b <- doesDirectoryExist (d ++ "/bin")
+    if b then listDirectory (d ++ "/bin") else pure []
+  let toolBins = [ e | e <- binEntries, e `elem` ["miso", "miso.exe", "cpphs", "cpphs.exe"] ]
+      dbs = [ e | e <- entries, isDb e ]
+      caches = if isHome then [ e | e <- entries, e `elem` ["mcabal", "src", "store", "rts", "miso.exe.old"] ] else []
+      ours = dbs ++ caches ++ [ "bin" | all (`elem` toolBins) binEntries ]
+      alone = all (`elem` ours) entries
+      cacheOk = alone || not isHome
+      paths = [ d ++ "/bin/" ++ e | e <- toolBins ] ++ [ d ++ "/" ++ e | e <- dbs ]
+              ++ [ d ++ "/" ++ e | cacheOk, e <- caches ]
+  pure (alone, paths)
+  where
+    -- mhs-VERSION, the tool's package database
+    isDb e = case stripPrefix' "mhs-" e of
+      Just (c : _) -> isDigit c
+      _ -> False
+    stripPrefix' p x = if p `isPrefixOf` x then Just (drop (length p) x) else Nothing
+
+
 -- | Where install.sh is served.
 installUrl :: String
 installUrl = "https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh"
@@ -282,6 +466,8 @@ installUrl = "https://raw.githubusercontent.com/haskell-miso/cli/main/install.sh
 -- | A new project from a template.
 new :: String -> String -> IO ()
 new template name = do
+  unless (packageName name) $
+    failWith ("miso new " ++ name ++ ": a project's name is a letter, then letters, digits and - (miso new --help)")
   files <- maybe (listTemplates >> failWith ("no template " ++ template)) pure (templates template name)
   exists <- doesDirectoryExist name
   when exists $ failWith (name ++ " already exists")
@@ -292,6 +478,100 @@ new template name = do
     writeFile file contents
     step file
   success ("Created " ++ name ++ ": cd " ++ name ++ " && miso dev")
+
+-- | A name for a package: a letter, then letters, digits and -.
+packageName :: String -> Bool
+packageName n = case n of
+  c : cs -> isAlpha c && all (\x -> isAlphaNum x || x == '-') cs
+  [] -> False
+
+-- | miso init: make the current directory a project, from a template,
+-- keeping the files that are already there (a .gitignore gets the lines it
+-- lacks).  On a terminal it asks for the name, version, synopsis, author,
+-- license and template, one at a time, each with a default; the flags
+-- answer them, and --yes (or input that is not a terminal) takes the
+-- defaults.
+initProject :: [String] -> IO ()
+initProject as = do
+  opts <- maybe (failWith initUsage) pure (options as)
+  here <- doesFileExist configFile
+  when here $ failWith (configFile ++ " is already here: this is a miso project")
+  dir <- getCurrentDirectory
+  tty <- isInputTerminal
+  gitName <- maybe "" trimLine <$> readCommand "git config user.name"
+  gitEmail <- maybe "" trimLine <$> readCommand "git config user.email"
+  let interactive = tty && "--yes" `notElem` map fst opts
+      given k = lookup k opts
+      ask k question dflt ok why =
+        case given k of
+          Just v -> if ok v then pure v else failWith (k ++ " " ++ v ++ ": " ++ why)
+          Nothing | not interactive -> if ok dflt then pure dflt
+                                       else failWith (question ++ " " ++ show dflt ++ ": " ++ why ++ "; give " ++ k)
+                  | otherwise -> loop
+        where
+          loop = do
+            putStr (question ++ (if null dflt then "" else " [" ++ dflt ++ "]") ++ ": ")
+            hFlush stdout
+            answer <- (Just . trimLine <$> getLine) `catch` endOfInput
+            let v = case answer of { Just a | not (null a) -> a; _ -> dflt }
+            case answer of
+              _ | ok v -> pure v
+              Nothing -> failWith ("no " ++ question ++ " (" ++ why ++ "): give " ++ k)
+              Just _ -> putStrLn ("  " ++ why) >> loop
+          endOfInput :: IOError -> IO (Maybe String)
+          endOfInput _ = pure Nothing
+      author0 = case (gitName, gitEmail) of
+                  ("", e) -> e
+                  (n, e) | null e || n == e -> n
+                         | otherwise -> n ++ " <" ++ e ++ ">"
+  name <- ask "--name" "name" (lastPart dir) packageName "a letter, then letters, digits and -"
+  ver <- ask "--version" "version" "0.1.0" versionLike "numbers separated by dots, like 0.1.0"
+  synopsis <- ask "--synopsis" "synopsis" "" (const True) ""
+  author <- ask "--author" "author" author0 (const True) ""
+  license <- ask "--license" "license (an SPDX id, or none)" "BSD-3-Clause" (not . null) "a license id, e.g. BSD-3-Clause, MIT, Apache-2.0; or none"
+  template <- ask "--template" ("template (" ++ intercalate ", " (map fst templateNames) ++ ")") "counter"
+                (`elem` map fst templateNames) ("one of " ++ unwords (map fst templateNames))
+  files0 <- maybe (failWith ("no template " ++ template)) pure (templates template name)
+  year <- maybe "" trimLine <$> readCommand "date +%Y"
+  let fields = [ "synopsis: " ++ synopsis | not (null synopsis) ]
+            ++ [ "author: " ++ author | not (null author) ]
+            ++ [ "license: " ++ license | license /= "none" ]
+      yml contents = unlines (concatMap (\l -> if l == "version: 0.1.0" then ("version: " ++ ver) : fields else [l]) (lines contents))
+      files = [ (p, if p == configFile then yml c else c) | (p, c) <- files0 ]
+           ++ [ ("LICENSE", t) | Just t <- [licenseText license year author] ]
+  when interactive $ putStrLn ""
+  info ("Initializing " ++ name ++ " (" ++ template ++ ") in " ++ dir)
+  forM_ files $ \(path, contents) -> do
+    there <- doesFileExist path
+    if not there
+      then do
+        unless (null (parent path)) $ createDirectoryIfMissing True (parent path)
+        writeFile path contents
+        step path
+      else if path == ".gitignore"
+        then do
+          old <- readFile' path
+          let missing = [ l | l <- lines contents, l `notElem` lines old ]
+          if null missing
+            then step (path ++ " (kept)")
+            else do
+              appendFile path ((if null old || last old == '\n' then "" else "\n") ++ unlines missing)
+              step (path ++ " (added " ++ unwords missing ++ ")")
+        else step (path ++ " (kept: it is already here)")
+  success ("Initialized " ++ name ++ ": miso dev")
+  where
+    initUsage = "usage: miso init [--name NAME] [--version V] [--synopsis S] [--author A] [--license L] [--template T] [--yes]"
+    options [] = Just []
+    options ("--yes" : rest) = (("--yes", "") :) <$> options rest
+    options (k : v : rest)
+      | k `elem` ["--name", "--version", "--synopsis", "--author", "--license", "--template"] = ((k, v) :) <$> options rest
+    options _ = Nothing
+    lastPart = reverse . takeWhile (`notElem` "/\\") . reverse
+    trimLine = reverse . dropWhile (`elem` " \t\r\n") . reverse . dropWhile (`elem` " \t")
+    versionLike v = not (null v) && all (\p -> not (null p) && all isDigit p) (splitDots v)
+    splitDots v = case break (== '.') v of
+      (x, _ : r) -> x : splitDots r
+      (x, []) -> [x]
 
 listTemplates :: IO ()
 listTemplates = do

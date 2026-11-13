@@ -17,16 +17,16 @@ import MicroHs.TypeCheck (TModule (..), ValueExport (..), isInstId)
 
 import Miso.CLI.Docs.Extract (Checked (..))
 import Miso.CLI.Docs.Lex (Kind (..), Tok (..), lexHaskell)
-import Miso.CLI.Util (pkgDir, toolDb)
+import Miso.CLI.Util (packagePath)
 
 -- | Type check modules (in source dirs, with CPP options), or say why not.
 typeCheck :: [FilePath] -> [String] -> [String] -> IO (Either String Checked)
 typeCheck dirs cpp mods = do
   (mhsDir, _, _) <- getPaths
-  db <- toolDb
-  pd <- pkgDir
+  -- the project's packages, then the tool's, as miso mhs has them
+  path <- packagePath
   let flags = defaultFlags
-        { mhsdir = mhsDir, srcPaths = dirs, pkgPaths = [db, pd]
+        { mhsdir = mhsDir, srcPaths = dirs, pkgPaths = [ p | '-' : 'a' : p@(_ : _) <- path ]
         , cppArgs = cpp, noCode = True, verbose = -1 }
   r <- try $ do
     cache <- compileMany flags (map mkIdent mods) emptyCache

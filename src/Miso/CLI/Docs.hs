@@ -12,7 +12,7 @@ import Control.Monad (forM, forM_, unless, when)
 import Data.Bits (xor)
 import Data.Char (isSpace)
 import Data.List (foldl', isInfixOf, isPrefixOf)
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeFile)
 import Data.Word (Word64)
 import System.Environment (lookupEnv)
 
@@ -20,8 +20,8 @@ import MicroHs.Compile (mhsVersion)
 
 import Miso.CLI.Build (modulesIn)
 import Miso.CLI.Color
-import Miso.CLI.Config (Config (..), Library (..), Native (..), configFile)
-import qualified Miso.CLI.Config as C
+import Miso.CLI.Config (Config (..), Library (..), Native (..))
+import Miso.CLI.Deps (installDeps)
 import Miso.CLI.Docs.Check (typeCheck)
 import Miso.CLI.Docs.Extract
 import Miso.CLI.Docs.Json
@@ -51,6 +51,8 @@ docs args cfg = do
     pure (Source mn s' s)
   checked <-
     if "--no-types" `elem` args then pure noChecked else do
+      -- the type checker needs the library's dependencies
+      installDeps cfg
       step "type checking (for the types the source does not say)"
       r <- typeCheck dirs cpp mods
       case r of
@@ -58,8 +60,7 @@ docs args cfg = do
         Left e -> do
           warn ("the library does not type check, so definitions without a signature show no type: " ++ e)
           pure noChecked
-  synopsis <- configSynopsis
-  let pkg = extractPackage (cfgName cfg) (cfgVersion cfg) synopsis checked srcs
+  let pkg = extractPackage (cfgName cfg) (cfgVersion cfg) (maybe "" id (cfgSynopsis cfg)) checked srcs
       ndecls = sum [ length [ () | Decl _ <- modItems m ] | m <- pkgModules pkg ]
   step ("read " ++ plural (length mods) "module" ++ ", " ++ plural ndecls "export")
   createDirectoryIfMissing True (out ++ "/data")
@@ -79,6 +80,9 @@ docs args cfg = do
 buildViewer :: IO FilePath
 buildViewer = do
   home <- misoHome
+  -- with the tool's packages and the release's miso, not the project's
+  tdb <- toolDb
+  prebuilt <- doesDirectoryExist (tdb ++ "/miso-prebuilt/packages")
   let dir = home ++ "/docs-viewer/" ++ viewerKey
       js = dir ++ "/index.js"
   built <- doesFileExist js
@@ -88,7 +92,8 @@ buildViewer = do
     step "building the viewer (once for this version of miso)"
     forM_ viewerFiles $ \(f, s) -> unless ("static/" `isPrefixOf` f) $ writeIn (dir ++ "/src/" ++ f) s
     let tmp = dir ++ "/index.tmp.js"
-    runSelf ("mhs -tbrowser -i" ++ quote (dir ++ "/src") ++ " -o" ++ quote tmp ++ " Main")
+    let path = "-a -a" ++ quote tdb ++ (if prebuilt then " -a" ++ quote (tdb ++ "/miso-prebuilt") else "")
+    runSelf ("mhs " ++ path ++ " -tbrowser -i" ++ quote (dir ++ "/src") ++ " -o" ++ quote tmp ++ " Main")
     ok <- doesFileExist tmp
     unless ok $ failWith ("mhs did not write " ++ tmp)
     copyFile' tmp js
@@ -132,20 +137,6 @@ findModule dirs mn = do
     f : _ -> pure f
     [] -> failWith ("no source for module " ++ mn ++ " in " ++ unwords dirs)
   where filterM' p = fmap concat . mapM (\x -> (\b -> [ x | b ]) <$> p x)
-
--- | The synopsis: of miso.yml, if it has one.
-configSynopsis :: IO String
-configSynopsis = do
-  ok <- doesFileExist configFile
-  if not ok then pure "" else do
-    s <- readFile configFile
-    pure $ case C.parseYAML s of
-      Right (C.Map kvs) | Just (C.Str v) <- lookup "synopsis" kvs -> unquote v
-      _ -> ""
-  where
-    unquote v = case v of
-      '"' : r | not (null r) && last r == '"' -> init r
-      _ -> v
 
 writeIn :: FilePath -> String -> IO ()
 writeIn f s = do
