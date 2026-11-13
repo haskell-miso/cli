@@ -399,9 +399,12 @@ miso doctor
 
 Checks the installation (the package database, `base`, miso, `cpphs`, that
 `$MISO_HOME` is writable), the tools (`cc`, `curl`, `tar`, `sha256sum` or
-`shasum`; and, as notes, `hlint`, `git` and `emcc`), and in a project,
-`miso.yml`, its programs and tests, source dirs, `emcc` for its browser
-targets, `.miso/`, `path:` dependencies, and `git` for git dependencies.
+`shasum`; and, as notes, `hlint`, `git` and `emcc`, and the JS runtime
+`emcc` runs on every build: the one `em-config NODE_JS` names, from
+`EM_NODE_JS` or the emscripten config, smoke-tested so `bun` counts too),
+and in a project, `miso.yml`, its programs and tests, source dirs, `emcc`
+and its JS runtime for its browser targets, `.miso/`, `path:`
+dependencies, and `git` for git dependencies.
 It says how to fix each problem, and fails when it found one (`2 problems
 found`); a missing optional tool is a note, not a problem.
 

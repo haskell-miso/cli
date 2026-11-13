@@ -4,8 +4,8 @@ module Miso.CLI.Doctor (doctor) where
 import Control.Monad (filterM, forM_, when)
 import Data.IORef
 import Data.List (isPrefixOf, nub)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
-import System.IO (hFlush, stdout)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory, removeFile)
+import System.IO (hClose, hFlush, hPutStrLn, openTempFile, stdout)
 
 
 import MicroHs.Compile (mhsVersion)
@@ -76,6 +76,11 @@ doctor = do
   if hasGit then ok "git (for git dependencies)" else note "git is not installed (needed for git dependencies)"
   hasEmcc <- have "emcc"
   if hasEmcc then ok "emcc (for the browser targets)" else note ("emcc is not installed (needed for the browser targets): " ++ emsdk)
+  runtime <- if hasEmcc then jsRuntime else pure (Left "")
+  when hasEmcc $ case runtime of
+    Right js -> ok ("JS runtime for emcc: " ++ js)
+    Left js -> note ("emcc has no working JS runtime" ++ (if null js then "" else " (" ++ js ++ ")")
+                     ++ ", and it runs one on every build: " ++ jsRuntimeFix)
   when windows $ do
     hasSh <- have "sh"
     check hasSh "sh (MSYS2)" "run miso in an MSYS2 shell"
@@ -98,6 +103,8 @@ doctor = do
         check (and dirs) ("source dirs: " ++ unwords (allSourceDirs cfg)) "a source dir of miso.yml does not exist"
         forM_ (nub [ t | Just t <- map exeTarget (cfgExecutables cfg), t `elem` emccTargets ]) $ \t ->
           check hasEmcc ("emcc (target: " ++ t ++ ")") ("install emscripten: " ++ emsdk)
+        when (hasEmcc && any ((`elem` map Just emccTargets) . exeTarget) (cfgExecutables cfg)) $
+          check (either (const False) (const True) runtime) "JS runtime for emcc (browser targets)" jsRuntimeFix
         mdb <- pkgDir
         case mdb of
           Just pd -> do
@@ -116,3 +123,36 @@ doctor = do
     then success "Everything is fine"
     else do
       failWith (show n ++ " problem" ++ (if n == 1 then "" else "s") ++ " found")
+
+-- | The JS runtime emcc runs (its JS compiler, at every -O), and whether it
+-- works.  em-config says which: EM_NODE_JS, or NODE_JS of the emscripten
+-- config, where emsdk and nix put their node (it need not be on the PATH).
+-- It need not be node either (bun works), so a smoke test says whether it
+-- runs a module with WebAssembly, rather than its --version.
+jsRuntime :: IO (Either String String)
+jsRuntime = do
+  r <- readCommand "em-config NODE_JS 2>/dev/null"
+  case maybe [] pyStrings r of
+    [] -> pure (Left "em-config NODE_JS says none")
+    cmd -> do
+      tmp <- getTemporaryDirectory
+      (f, h) <- openTempFile tmp "miso-smoke.mjs"
+      hPutStrLn h "console.log(typeof WebAssembly.instantiate)"
+      hClose h
+      out <- readCommand (unwords (map quote cmd) ++ " " ++ quote f ++ " 2>/dev/null")
+      removeFile f
+      let js = unwords cmd
+      pure (if fmap lines out == Just ["function"] then Right js else Left (js ++ " does not run"))
+
+-- | NODE_JS as em-config prints it: a Python list (['/usr/bin/node']), or a
+-- string in older emscriptens.
+pyStrings :: String -> [String]
+pyStrings s = case dropWhile (== ' ') s of
+  '[' : r -> go r
+  r -> words r
+  where go r = case dropWhile (/= '\'') r of
+                 '\'' : t -> let (a, b) = break (== '\'') t in a : go (drop 1 b)
+                 _ -> []
+
+jsRuntimeFix :: String
+jsRuntimeFix = "install node, or point emscripten at another runtime: export EM_NODE_JS=$(command -v bun)"
