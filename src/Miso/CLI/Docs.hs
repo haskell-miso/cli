@@ -12,13 +12,13 @@ import Control.Monad (forM, forM_, unless, when)
 import Data.Bits (xor)
 import Data.Char (isSpace)
 import Data.List (foldl', isInfixOf, isPrefixOf)
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, removeFile)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory, removeFile)
 import Data.Word (Word64)
 import System.Environment (lookupEnv)
 
 import MicroHs.Compile (mhsVersion)
 
-import Miso.CLI.Build (modulesIn)
+import Miso.CLI.Build (libraryArgs, modulesIn)
 import Miso.CLI.Color
 import Miso.CLI.Config (Config (..), Library (..), Native (..))
 import Miso.CLI.Deps (installDeps)
@@ -34,8 +34,12 @@ docs :: [String] -> Config -> IO ()
 docs args cfg = do
   (out, noTypes) <- either failWith pure (docsArgs args)
   lib <- maybe (failWith (cfgName cfg ++ " has no library to document (miso.yml has no library: section)")) pure (cfgLibrary cfg)
+  ownOut out
+  -- CPP as miso build has it: cpp-options, and the -I (include-dirs) and
+  -- -D of its arguments (mhs-options)
+  (largs, _) <- libraryArgs cfg lib
   let dirs = libSourceDirs lib
-      cpp = cppOptions (libNative lib)
+      cpp = cppOptions (libNative lib) ++ [ a | a <- largs, take 2 a `elem` ["-I", "-D"], a `notElem` cppOptions (libNative lib) ]
   mods <- maybe (concat <$> mapM modulesIn dirs) pure (libExposed lib)
   when (null mods) $ failWith ("the library has no modules in " ++ unwords dirs)
   info ("Documenting " ++ cfgName cfg ++ " " ++ cfgVersion cfg)
@@ -59,7 +63,10 @@ docs args cfg = do
   let pkg = extractPackage (cfgName cfg) (cfgVersion cfg) (maybe "" id (cfgSynopsis cfg)) checked srcs
       ndecls = sum [ length [ () | Decl _ <- modItems m ] | m <- pkgModules pkg ]
   step ("read " ++ plural (length mods) "module" ++ ", " ++ plural ndecls "export")
+  -- the data of the last run, of modules that may be gone
+  run ("rm -rf " ++ quote (out ++ "/data"))
   createDirectoryIfMissing True (out ++ "/data")
+  writeFile (out ++ "/" ++ marker) ""
   writeFile (out ++ "/data/" ++ indexFileName) (indexScript pkg)
   writeFile (out ++ "/" ++ cfgName cfg ++ ".txt") (hoogle pkg)
   forM_ (pkgModules pkg) $ \m -> writeFile (out ++ "/data/" ++ dataFileName (modName m)) (moduleScript m)
@@ -71,6 +78,19 @@ docs args cfg = do
   success ("Wrote " ++ out ++ "/: open " ++ out ++ "/index.html")
   where
     plural n w = show n ++ " " ++ w ++ (if n == 1 then "" else "s")
+
+-- | The file that says miso docs wrote a directory.
+marker :: FilePath
+marker = ".miso-docs"
+
+-- | Stop unless the output directory is empty, not there, or one miso docs
+-- wrote: not a docs/ of the project's own (a site, a manual).
+ownOut :: FilePath -> IO ()
+ownOut out = do
+  there <- doesDirectoryExist out
+  fs <- if there then listDirectory out else pure []
+  unless (null fs || marker `elem` fs) $
+    failWith (out ++ "/ has files miso docs did not write: give it another directory (miso docs --out DIR)")
 
 -- | The viewer's index.js, built if this version of it is not built yet.
 buildViewer :: IO FilePath
@@ -91,7 +111,8 @@ buildViewer = do
     forM_ viewerFiles $ \(f, s) -> unless ("static/" `isPrefixOf` f) $ writeIn (dir ++ "/src/" ++ f) s
     let tmp = dir ++ "/index.tmp.js"
     let path = "-a -a" ++ quote tdb ++ (if prebuilt then " -a" ++ quote (tdb ++ "/miso-prebuilt") else "")
-    runSelf ("mhs " ++ path ++ " -tbrowser -i" ++ quote (dir ++ "/src") ++ " -o" ++ quote tmp ++ " Main")
+    -- -i first: mhs looks in . (the project) unless told otherwise
+    runSelf ("mhs " ++ path ++ " -tbrowser -i -i" ++ quote (dir ++ "/src") ++ " -o" ++ quote tmp ++ " Main")
     ok <- doesFileExist tmp
     unless ok $ failWith ("mhs did not write " ++ tmp)
     copyFile' tmp js

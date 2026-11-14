@@ -211,11 +211,13 @@ first error, so after fixing one, the next shows on the next save.
 
 `miso docs` documents the library of `miso.yml` (its `exposed-modules`, or
 every module under its `source-dirs`), as Haddock does, with no GHC: it reads
-the modules' source (after CPP, with the library's `cpp-options`), and type
+the modules' source (after CPP, as `miso build` has it: `cpp-options`, `include-dirs`), and type
 checks them in the tool for the types the source does not say (of functions
 without a signature, and of names re-exported from other packages;
 `--no-types` skips that).  `docs/` is a static site that works from
-`file://` or any server:
+`file://` or any server.  miso docs writes only a directory that is empty
+or one it wrote (it leaves a `.miso-docs` file), so a `docs/` of your own
+is an error: give it another with `--out DIR`.
 
 - `index.html`, `docs.css`, and `index.js`, the viewer: a miso app, built
   with mhs and emcc the first time (and kept in `$MISO_HOME/docs-viewer`), as

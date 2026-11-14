@@ -268,13 +268,20 @@ miso docs [--out DIR] [--no-types]
 A documentation site for the library of `miso.yml`, as Haddock makes, in
 `docs/` (or `DIR`): its `exposed-modules`, or every module of its
 `source-dirs`.  It reads the modules' source (after CPP, with the library's
-`cpp-options`), and type checks the library, after installing its
+`cpp-options`, `include-dirs` and the `-D` and `-I` of `mhs-options`, as
+`miso build` has them), and type checks the library, after installing its
 dependencies, for the types the source does not say; `--no-types` skips
 both.  When the library does not type check, it warns and goes on with
 the source alone.  The site works from `file://` or any server:
 `index.html`, the viewer (`index.js`, a miso app), `data/MODULE.js` for each
 module, and `NAME.txt`, a Hoogle database.  See the
 [README](../README.md) for what it shows.
+
+It writes only a directory that is empty, not there, or one it wrote before
+(it leaves a `.miso-docs` file there): a `docs/` of the project's own, such
+as a hand-written site, is an error (use `--out DIR`).  Each run replaces
+`data/`, so a module the library no longer has is gone.  `miso clean` does
+not remove the site.
 
 The viewer does not depend on the library: it is built with emcc the first
 time, and kept in `$MISO_HOME/docs-viewer/`.  Fails when `miso.yml` has no

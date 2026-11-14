@@ -32,7 +32,7 @@ typeCheck dirs cpp mods = do
     cache <- compileMany flags (map mkIdent mods) emptyCache
     let tms = getCompMdls cache
         values = M.fromList [ (unIdent (tModuleName tm), map export (tValueExps tm)) | tm <- tms ]
-        insts = M.fromList [ (unIdent (tModuleName tm), [ instanceHead (unIdent i) | (i, _) <- tBindingsOf tm, isInstId i ]) | tm <- tms ]
+        insts = M.fromList [ (unIdent (tModuleName tm), filter (not . generated) [ instanceHead (unIdent i) | (i, _) <- tBindingsOf tm, isInstId i ]) | tm <- tms ]
     _ <- evaluate (sum [ length a + length b + length c | es <- M.elems values, (a, b, c) <- es ]
                    + sum (map length (concat (M.elems insts))))
     pure (Checked values insts)
@@ -43,6 +43,12 @@ typeCheck dirs cpp mods = do
     -- mhs says where, then on the next line what
     firstLine = unwords . map (dropWhile (== ' ')) . take 2 . lines
     export (ValueExport i (Entry qi t)) = (unIdent i, cleanType (showEType t), qualifier (showExprRaw qi))
+
+-- | The instances mhs makes for every type (Typeable) and record field
+-- (HasField, SetField), which Haddock does not show; one the source
+-- declares is shown from the source.
+generated :: String -> Bool
+generated h = takeWhile (/= ' ') h `elem` ["Typeable", "HasField", "SetField"]
 
 -- | The head of an instance from the name of its dictionary:
 -- inst$Data.Eq.Eq@(M.T@a) is Eq (T a).

@@ -260,9 +260,9 @@ parseDoc r = blocks
       '\\' : '[' : cs | (m, _ : _ : rest) <- breakOn "\\]" cs -> Math m : go rest
       '\\' : c : cs -> Str [c] : go cs
       '&' : '#' : cs | Just (c, rest) <- charRef cs -> Str [c] : go rest
-      '!' : '[' : cs | (alt, ']' : '(' : more) <- break (== ']') cs, (url, ')' : rest) <- break (== ')') more ->
+      '!' : '[' : cs | (alt, ']' : '(' : more) <- break (== ']') cs, (url, ')' : rest) <- break (== ')') more, safeUrl url ->
         Image url alt : go rest
-      '<' : '<' : cs | (u, '>' : '>' : rest) <- breakOn ">>" cs ->
+      '<' : '<' : cs | (u, '>' : '>' : rest) <- breakOn ">>" cs, safeUrl (takeWhile (not . isSpace) u) ->
         let (url, title) = break isSpace u in Image url (trim title) : go rest
       '@' : cs | not keep, (code, '@' : rest) <- breakEsc (== '@') cs ->
         (if any (`elem` "'\"") code then Mono (merge (inl True code)) else Code (unescape code)) : go rest

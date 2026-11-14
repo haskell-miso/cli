@@ -124,7 +124,7 @@ commands =
     , ("watch [NAME]", "type check on every change, and show the first error")
     , ("lint [ARGS]", "run hlint on the project's sources (.hlint.yaml configures it)")
     , ("repl", "mhs, interactively, with the project's sources")
-    , ("docs [--out DIR]", "a documentation site for the library, in docs/")
+    , ("docs [--out DIR] [--no-types]", "a documentation site for the library, in docs/")
     , ("clean", "remove what builds make (dist/, public/, .miso/, caches)")
     , ("templates", "list the templates of miso new")
     ])
