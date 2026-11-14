@@ -220,7 +220,7 @@ without a signature, and of names re-exported from other packages;
 - `index.html`, `docs.css`, and `index.js`, the viewer: a miso app, built
   with mhs and emcc the first time (and kept in `$MISO_HOME/docs-viewer`), as
   it does not depend on the library;
-- `data/index.js` (the modules and every name, for search) and a
+- `data/_index.js` (the modules and every name, for search) and a
   `data/MODULE.js` for each module, which the viewer loads when it shows it.
 
 It shows the export list of each module, with its sections and named chunks,

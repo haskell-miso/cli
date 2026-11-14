@@ -93,6 +93,7 @@ lexHaskell = go 1 1
     -- 'a' and '\n'; otherwise a quote is a TH name or a promoted constructor
     charLit s =
       case s of
+        '\\' : c : '\'' : r | c `elem` "'\\" -> Just (['\'', '\\', c, '\''], r)
         '\\' : cs -> case break (== '\'') cs of
                        (e, '\'' : r) | length e <= 10 && not (any (== '\n') e) -> Just ("'\\" ++ e ++ "'", r)
                        _ -> Nothing

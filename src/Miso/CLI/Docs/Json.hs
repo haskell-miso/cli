@@ -6,10 +6,12 @@ module Miso.CLI.Docs.Json
   ( indexScript
   , moduleScript
   , dataFileName
+  , indexFileName
   , hoogle
   ) where
 
 import Data.Char (ord)
+import Data.List (isInfixOf)
 
 import Miso.CLI.Docs.Extract
 import Miso.CLI.Docs.Lex (highlight, lexHaskell)
@@ -58,6 +60,12 @@ script name j = "misoDocsData(" ++ render (JS name) ++ "," ++ render j ++ ");\n"
 -- | The file of a module's data, in data/.
 dataFileName :: String -> String
 dataFileName mn = mn ++ ".js"
+
+-- | The index's script: a name no module has (a module name starts with a
+-- capital), so that a module Index is not it on a filesystem that ignores
+-- case (macOS, Windows).
+indexFileName :: String
+indexFileName = "_index.js"
 
 -- | The package, a summary of each module, and every name, for search.
 indexScript :: Package -> String
@@ -144,6 +152,9 @@ hoogle pkg = unlines $
               | m <- pkgModules pkg, not (modHidden m) ]
   where
     own m = [ d | Decl d <- modItems m, declFrom d == modName m, declKind d /= "reexport" ]
+    -- a function with no type (no signature, and none from the type
+    -- checker) is not something Hoogle takes
+    decl' d | declKind d == "function" && not ("::" `isInfixOf` declText d) = []
     decl' d =
       doc (firstPara (declDoc d)) ++ [ declText d ]
       ++ concat [ doc (firstPara (subDoc s)) ++ [subText s] ++ concat [ doc (firstPara (subDoc f)) ++ [subText f] | f <- subFields s ]

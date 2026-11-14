@@ -1,7 +1,7 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
 -- | The documentation viewer of miso docs: a miso app that shows the data
--- of data/ (see Docs.Types).  The index comes with the page (data/index.js);
+-- of data/ (see Docs.Types).  The index comes with the page (data/_index.js);
 -- a module's data is loaded when its page is shown.  Pages are named by the
 -- URL hash:
 --
@@ -64,7 +64,7 @@ main :: IO ()
 main = do
   h <- getHash
   raw <- getData "index"
-  case maybe (Left "no data/index.js") eitherDecode raw of
+  case maybe (Left "no data/_index.js") eitherDecode raw of
     Left e -> startApp defaultEvents (component () (\_ -> pure ()) (\_ -> broken e))
     Right ix -> startApp events (app ix (Model (routeOf h) System False M.empty []))
 

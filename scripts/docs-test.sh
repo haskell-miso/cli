@@ -24,7 +24,7 @@ hasnt() {
 cp -R "$top/examples/shapes" "$tmp/shapes"
 cd "$tmp/shapes"
 miso docs
-for f in index.html index.js docs.css data/index.js shapes.txt data/Shapes.js data/Shapes.Types.js data/Shapes.Geometry.js data/Shapes.Render.js; do
+for f in index.html index.js docs.css data/_index.js shapes.txt data/Shapes.js data/Shapes.Types.js data/Shapes.Geometry.js data/Shapes.Render.js; do
   [ -s "docs/$f" ] || { echo "docs test: no docs/$f" >&2; failed=1; }
 done
 t=docs/data/Shapes.Types.js g=docs/data/Shapes.Geometry.js r=docs/data/Shapes.Render.js
@@ -61,11 +61,16 @@ has $e '"n":"helper"'                              # module Edge.Internal, inlin
 has $e 'A block doc, with a space'                # {- | -}
 has $e '[this](javascript:'                       # not a link: its scheme
 has $e 'Copyright'                                 # the module header
-has docs/data/index.js '"n":"Edge.Internal"'
-has docs/data/index.js '"hidden":true'             # OPTIONS_HADDOCK hide
+has docs/data/_index.js '"n":"Edge.Internal"'
+has docs/data/_index.js '"hidden":true'             # OPTIONS_HADDOCK hide
 has docs/data/Edge.Pruned.js '"n":"shown"'
 hasnt docs/data/Edge.Pruned.js '"n":"hiddenByPrune"'  # OPTIONS_HADDOCK prune
 has docs/edge.txt 'pattern Origin :: Point'
+has docs/data/_index.js '"n":"Index"'               # a module Index is not the index
+has docs/data/Index.js '"n":"quote"'
+has docs/data/Index.js "class=\\\"hl-str\\\">'\\\\''\\u003c/span>"  # '\'' is one literal
+has docs/edge.txt 'quote :: Char'
+if grep -qx 'noSig' docs/edge.txt; then echo "docs test: docs/edge.txt has noSig with no type" >&2; failed=1; fi
 
 [ $failed = 0 ] || exit 1
 echo "docs test: ok"
