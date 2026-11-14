@@ -280,7 +280,7 @@ parseDoc r = blocks
       '<' : cs | (u, '>' : rest) <- break (`elem` "<>") cs, isUrl u ->
         let (url, label) = break isSpace u
         in Link (if null label then url else trim label) url : go rest
-      '[' : cs | (label, ']' : '(' : more) <- break (== ']') cs, (url, ')' : rest) <- break (== ')') more ->
+      '[' : cs | (label, ']' : '(' : more) <- break (== ']') cs, (url, ')' : rest) <- break (== ')') more, safeUrl url ->
         Link label url : go rest
       c : cs | isSpace c && keep -> let (sp, rest) = span isSpace cs in Str (c : sp) : go rest
       c : cs | isAlphaNum c -> let (plain, rest) = break special cs in wordThen (c : plain) rest
@@ -299,8 +299,8 @@ parseDoc r = blocks
 
     -- &#123; and &#x7b;
     charRef cs = case cs of
-      x : rest | x `elem` "xX", (h@(_ : _), ';' : rest') <- span isHexDigit rest -> Just (chr (readHex h), rest')
-      _ | (d@(_ : _), ';' : rest') <- span isDigit cs -> Just (chr (read d), rest')
+      x : rest | x `elem` "xX", (h@(_ : _), ';' : rest') <- span isHexDigit rest, length h <= 6, readHex h <= 0x10FFFF -> Just (chr (readHex h), rest')
+      _ | (d@(_ : _), ';' : rest') <- span isDigit cs, length d <= 7, read d <= (0x10FFFF :: Int) -> Just (chr (read d), rest')
       _ -> Nothing
     readHex = foldl (\n c -> n * 16 + hexDigit c) 0
     hexDigit c
@@ -325,6 +325,9 @@ parseDoc r = blocks
       && case rest of { c : _ -> not (isAlphaNum c); [] -> True }
 
     isUrl u = any (`isPrefixOf` u) ["http://", "https://", "mailto:", "ftp://"]
+    -- a link's target: a URL of those schemes, or a relative one (no
+    -- scheme, so not javascript:)
+    safeUrl u = isUrl u || ':' `notElem` takeWhile (`notElem` "/?#") u
 
     isRefChar c = isAlphaNum c || c `elem` "_'.!#$%&*+/<=>?@\\^|-~:"
     isName n = not (null n) && (isAlpha (head n) || head n == '_' || all (`elem` "!#$%&*+./<=>?@\\^|-~:") n || qualified n)

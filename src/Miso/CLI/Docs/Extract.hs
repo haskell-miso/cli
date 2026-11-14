@@ -223,10 +223,16 @@ docRun cs = go cs []
     continuation _ ts = ([], ts)
 
 isDocStart :: String -> Bool
-isDocStart s = marked "|" s || "{-|" `isPrefixOf` s
+isDocStart s = marked "|" s || blockMarked '|' s
 
 isDocAfter :: String -> Bool
-isDocAfter s = marked "^" s || "{-^" `isPrefixOf` s
+isDocAfter s = marked "^" s || blockMarked '^' s
+
+-- | {- followed by a mark: {-| text -}, {- | text -}.
+blockMarked :: Char -> String -> Bool
+blockMarked m s = case s of
+  '{' : '-' : r -> take 1 (dropWhile (== ' ') r) == [m]
+  _ -> False
 
 -- | -- followed by a mark: -- | text, --| text.
 marked :: String -> String -> Bool

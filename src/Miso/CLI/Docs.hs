@@ -32,11 +32,7 @@ import Miso.CLI.Util
 -- | miso docs [--out DIR] [--no-types]
 docs :: [String] -> Config -> IO ()
 docs args cfg = do
-  let out = case [ d | ("--out", d) <- zip args (drop 1 args) ] of
-        d : _ -> d
-        [] -> "docs"
-      known = ["--no-types", "--out", out]
-  unless (all (`elem` known) args) $ failWith "expected miso docs [--out DIR] [--no-types]"
+  (out, noTypes) <- either failWith pure (docsArgs args)
   lib <- maybe (failWith (cfgName cfg ++ " has no library to document (miso.yml has no library: section)")) pure (cfgLibrary cfg)
   let dirs = libSourceDirs lib
       cpp = cppOptions (libNative lib)
@@ -50,7 +46,7 @@ docs args cfg = do
     s' <- if usesCpp s then preprocess cpp f s else pure s
     pure (Source mn s' s)
   checked <-
-    if "--no-types" `elem` args then pure noChecked else do
+    if noTypes then pure noChecked else do
       -- the type checker needs the library's dependencies
       installDeps cfg
       step "type checking (for the types the source does not say)"
@@ -83,7 +79,9 @@ buildViewer = do
   -- with the tool's packages and the release's miso, not the project's
   tdb <- toolDb
   prebuilt <- doesDirectoryExist (tdb ++ "/miso-prebuilt/packages")
-  let dir = home ++ "/docs-viewer/" ++ viewerKey
+  hasDefault <- doesFileExist (tdb ++ "/miso-default")
+  misoRelease <- if hasDefault then readFile' (tdb ++ "/miso-default") else pure ""
+  let dir = home ++ "/docs-viewer/" ++ viewerKey misoRelease
       js = dir ++ "/index.js"
   built <- doesFileExist js
   unless built $ do
@@ -101,14 +99,25 @@ buildViewer = do
   pure js
 
 -- | A name for this viewer: a checksum (FNV-1a) of the files it is built
--- from (not static/, which is copied as it is) and the versions.
-viewerKey :: String
-viewerKey = hex (foldl' step' 14695981039346656037 (concat [ f ++ s | (f, s) <- viewerFiles, not ("static/" `isPrefixOf` f) ] ++ version ++ mhsVersion))
+-- from (not static/, which is copied as it is), the versions, and the
+-- release's miso (its miso-default: commit and flags).
+viewerKey :: String -> String
+viewerKey misoRelease = hex (foldl' step' 14695981039346656037 (concat [ f ++ s | (f, s) <- viewerFiles, not ("static/" `isPrefixOf` f) ] ++ version ++ mhsVersion ++ misoRelease))
   where
     step' :: Word64 -> Char -> Word64
     step' h c = (h `xor` fromIntegral (fromEnum c)) * 1099511628211
     hex :: Word64 -> String
     hex n = let (q, r) = n `divMod` 16 in (if q > 0 then hex q else "") ++ ["0123456789abcdef" !! fromIntegral r]
+
+-- | The arguments: [--out DIR] [--no-types].
+docsArgs :: [String] -> Either String (FilePath, Bool)
+docsArgs = go ("docs", False)
+  where
+    go (o, n) as = case as of
+      [] -> Right (o, n)
+      "--no-types" : r -> go (o, True) r
+      "--out" : d : r | not ("-" `isPrefixOf` d) -> go (d, n) r
+      _ -> Left "expected miso docs [--out DIR] [--no-types]"
 
 copyFile' :: FilePath -> FilePath -> IO ()
 copyFile' from to = run ("cp " ++ quote from ++ " " ++ quote to)

@@ -58,6 +58,8 @@ has $e '"fx":"infixr 0"'
 has $e '"min":"empty, insert"'
 has $e '"n":"Origin","a":"v:Origin","k":"pattern"' # bundled: Point (.., Origin)
 has $e '"n":"helper"'                              # module Edge.Internal, inlined
+has $e 'A block doc, with a space'                # {- | -}
+has $e '[this](javascript:'                       # not a link: its scheme
 has $e 'Copyright'                                 # the module header
 has docs/data/index.js '"n":"Edge.Internal"'
 has docs/data/index.js '"hidden":true'             # OPTIONS_HADDOCK hide
