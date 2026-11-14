@@ -57,6 +57,7 @@ project read `miso.yml` in the current directory (not in a parent).
 | `miso serve [--port N]` | serve `public/` (on the first free port from 8000, or N) |
 | `miso watch [NAME]` | type check the library, the programs and the tests (or NAME) on every change, and show the first error, as ghcid does |
 | `miso lint [ARGS]` | run [hlint](https://github.com/ndmitchell/hlint) on the source dirs of `miso.yml`, with ARGS; it reads `.hlint.yaml` |
+| `miso docs [--out DIR] [--no-types]` | a documentation site for the library, in `docs/` (or DIR): a miso app, built with mhs |
 | `miso repl` | mhs, interactively: in a project with its sources, `mhs-options` and packages (installed first), elsewhere with the tool's packages. Input that is not a terminal is read as lines, so expressions can be piped to it |
 | `miso clean` | in a project only: remove `dist/`, `public/`, `.miso/`, `.mhscache`, `dist-mcabal/` and `.miso-build.log` (not `.miso/` when it is `$MISO_HOME`) |
 | `miso install` | install the dependencies of `miso.yml`, in the project's `.miso/` |
@@ -207,6 +208,43 @@ the old `try` instruction is deprecated.
 takes many) on the library, each program and each test, clears the screen, and shows
 `All good` or the first error as `file:line:col: message`.  mhs stops at the
 first error, so after fixing one, the next shows on the next save.
+
+`miso docs` documents the library of `miso.yml` (its `exposed-modules`, or
+every module under its `source-dirs`), as Haddock does, with no GHC: it reads
+the modules' source (after CPP, as `miso build` has it: `cpp-options`, `include-dirs`), and type
+checks them in the tool for the types the source does not say (of functions
+without a signature, and of names re-exported from other packages;
+`--no-types` skips that).  `docs/` is a static site that works from
+`file://` or any server.  miso docs writes only a directory that is empty
+or one it wrote (it leaves a `.miso-docs` file), so a `docs/` of your own
+is an error: give it another with `--out DIR`.
+
+- `index.html`, `docs.css`, and `index.js`, the viewer: a miso app, built
+  with mhs and emcc the first time (and kept in `$MISO_HOME/docs-viewer`), as
+  it does not depend on the library;
+- `data/_index.js` (the modules and every name, for search) and a
+  `data/MODULE.js` for each module, which the viewer loads when it shows it.
+
+It shows the export list of each module, with its sections and named chunks,
+or with none, the module's declarations; each declaration with its signature
+(highlighted), its docs, its arguments', constructors' and fields' docs
+(`-- ^`), a class's methods, the instances of the package for a class or a
+type (and the derived ones), `DEPRECATED` pragmas, and its source, inline or
+in the highlighted module source.  `module M` in an export list puts M's
+exports there.  Haddock's markup: paragraphs, `@...@` and bird track code,
+`>>>` examples, nested lists, definition lists, grid tables, headings,
+`@since`, links, images, anchors, `'identifier'` and `"Module"` references,
+and math (`\(...\)`, `\[...\]`, drawn with KaTeX), `prop>`, markdown
+images and character references.  Fixities, `MINIMAL` pragmas, `WARNING`s and
+the fields of a module header are shown, and `OPTIONS_HADDOCK` `hide`,
+`prune`, `ignore-exports` and `not-home` are followed (a name links to the
+page of a module that shows it).  The types in signatures link to their
+declarations, and the names in the source to theirs.
+
+Search is a palette (`/`, or Ctrl-K / Cmd-K): modules and names as you type,
+the arrows to choose, enter to go.  `#/:index` lists every name, A to Z, and
+`docs/NAME.txt` is a Hoogle database of the package.  The theme follows the
+system, or the button.
 
 ## Packages
 

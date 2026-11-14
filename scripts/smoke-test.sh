@@ -333,6 +333,11 @@ miso build cmds > build.log 2>&1 || fail "miso build cmds failed" build.log
 if miso build nope > build.log 2>&1; then fail "miso build built a program that is not there" build.log; fi
 if miso dev > dev.log 2>&1; then fail "miso dev served a native program" dev.log; fi
 grep -q 'miso dev is for browser targets' dev.log || fail "no error for miso dev of a native program" dev.log
+# miso docs: its errors (scripts/docs-test.sh, with emcc, writes sites)
+if miso docs --out > docs.log 2>&1; then fail "miso docs took --out without a DIR" docs.log; fi
+grep -q 'expected miso docs \[--out DIR\] \[--no-types\]' docs.log || fail "no error for miso docs --out" docs.log
+if miso docs > docs.log 2>&1; then fail "miso docs documented a project with no library" docs.log; fi
+grep -q 'cmds has no library to document' docs.log || fail "no error for miso docs without a library" docs.log
 cp miso.yml miso.yml.before
 miso add split > add.log 2>&1 || fail "miso add split failed" add.log
 grep -q 'split' miso.yml || fail "miso add did not add split to miso.yml" miso.yml
