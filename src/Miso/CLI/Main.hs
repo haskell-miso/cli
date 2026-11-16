@@ -24,6 +24,7 @@ import Miso.CLI.Cabalize (cabalFile)
 import Miso.CLI.Color
 import Miso.CLI.Config
 import Miso.CLI.Deps
+import Miso.CLI.Docs (docs)
 import Miso.CLI.Doctor (doctor)
 import Miso.CLI.Serve (dev, serve, watch)
 import Miso.CLI.Templates (licenseText, templateNames, templates)
@@ -86,6 +87,7 @@ main' = do
     ["watch"]          -> withConfig (watch Nothing)
     ["watch", n]       -> withConfig (watch (Just n))
     "serve" : as       -> port as >>= serve
+    "docs" : as        -> withConfig (docs as)
     ["clean"]          -> clean
     "lint" : as        -> withConfig (lint as)
     ["repl"]           -> repl
@@ -122,6 +124,7 @@ commands =
     , ("watch [NAME]", "type check on every change, and show the first error")
     , ("lint [ARGS]", "run hlint on the project's sources (.hlint.yaml configures it)")
     , ("repl", "mhs, interactively, with the project's sources")
+    , ("docs [--out DIR] [--no-types]", "a documentation site for the library, in docs/")
     , ("clean", "remove what builds make (dist/, public/, .miso/, caches)")
     , ("templates", "list the templates of miso new")
     ])

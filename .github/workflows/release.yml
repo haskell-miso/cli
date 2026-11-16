@@ -41,6 +41,26 @@ jobs:
           name: miso-${{ matrix.system }}
           path: result/*
 
+  # miso docs on the examples, with the x86_64-linux build (the viewer needs
+  # emcc, which the smoke tests do not have), and the emscripten of the
+  # templates job: the nixpkgs miso is built with
+  docs:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - uses: actions/download-artifact@v5
+        with:
+          name: miso-x86_64-linux
+          path: dist
+      - name: miso docs
+        run: |
+          rev=$(jq -r '.nodes[.nodes.miso.inputs.nixpkgs].locked.rev' flake.lock)
+          echo "emscripten from nixpkgs $rev"
+          nix shell "github:NixOS/nixpkgs/$rev#emscripten" \
+            --command scripts/docs-test.sh dist/miso-x86_64-linux.tar.gz
+
   # Every template built for the browser with emcc, as a new user would:
   # the smoke test builds native programs only (scripts/template-test.sh).
   # emcc comes from the nixpkgs miso is built with (flake.lock), so this
