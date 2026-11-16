@@ -542,7 +542,8 @@ declaration mo member d =
       else H.div_ [ P.class_ "args" ]
              [ H.div_ [ P.class_ "arg" ]
                  [ H.code_ [ P.class_ "arg-type", prop "innerHTML" t ] []
-                 , doc "doc arg-doc" ad
+                 -- a cell even without a doc: the grid's rows stay in step
+                 , H.div_ [ P.class_ "doc arg-doc", prop "innerHTML" ad ] []
                  ]
              | (t, ad) <- declArgs d ]
     , doc "doc" (declDoc d)
