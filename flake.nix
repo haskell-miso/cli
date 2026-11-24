@@ -28,7 +28,7 @@
 
         miso-cli = pkgs.stdenv.mkDerivation {
           pname = "miso";
-          version = "0.2.0";
+          version = "0.3.0";
           src = ./.;
           nativeBuildInputs = [ pkgs.microhs cc pkgs.gnumake ];
           buildPhase = ''
